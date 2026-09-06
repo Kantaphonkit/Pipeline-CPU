@@ -1,0 +1,28 @@
+# Simulation work dirs (sim/run.sh and sim/run.ps1 recreate these; only
+# sim/work/<tb>/sim.log and, when --wave was used, sim/work/<tb>/<tb>.wdb are
+# meant to be inspected — everything else here is xsim scratch).
+sim/work/
+xsim.dir/
+*.jou
+*.log
+*.pb
+*.wdb
+*.str
+.Xil/
+webtalk*
+hs_err_*
+
+# Vivado project / synthesis outputs (create_project.tcl / synth.tcl regenerate these)
+vivado/project/
+vivado/*.xpr
+vivado/*.runs/
+vivado/*.cache/
+vivado/*.hw/
+vivado/*.ip_user_files/
+vivado/*.sim/
+
+# Python
+__pycache__/
+*.pyc
+
+# Fixtures (asm/*.hex) are committed on purpose — do NOT ignore *.hex here.
