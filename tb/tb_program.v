@@ -102,8 +102,28 @@ module tb_program #(
     reg [1023:0] f_regs;
     reg [1023:0] f_trace;
     integer      maxcyc;
-    integer      irq_at;
     reg          notrace;
+
+    // ---- external-interrupt drive (step 7) --------------------------------
+    // +IRQ_AT1/2/3=<cycle>: raise `irq` at the end of that cycle (cycles are
+    // counted from reset release) and HOLD it -- the input is a level, not a
+    // pulse -- until the CPU is observed taking the interrupt, then drop it.
+    //
+    // This is deliberately not identical to the reference model, whose
+    // --irq-after N is a one-shot sample that is DROPPED if mstatus.MIE or
+    // mie.MEIE is clear at that instant.  A held level instead waits: an irq
+    // raised while the CPU is inside its handler (MIE = 0) is taken as soon as
+    // mret restores MIE.  The two models agree whenever an interrupt arrives
+    // with interrupts already enabled, which is the case the demo program is
+    // built around; the difference is exercised on purpose by a run that
+    // schedules an irq inside the ISR.
+    integer      irq_at1, irq_at2, irq_at3;
+    reg          irq_verbose;
+    integer      n_irq;
+    reg          isr_armed;
+    reg [31:0]   isr_mepc, isr_mtvec;
+    integer      trace_lines;
+    reg          irq_taken_d1, mret_taken_d1;
 
     integer      cyc;
     integer      trace_fd;
@@ -131,29 +151,95 @@ module tb_program #(
             cyc <= cyc + 1;
     end
 
-    // ---- commit trace (docs/INTERFACES.md section 5 format) ---------------
+    // ---- irq level drive --------------------------------------------------
     always @(posedge clk) begin
-        if (!rst && trace_valid && trace_fd != 0) begin
-            if (trace_rd_we && trace_mem_we)
-                $fwrite(trace_fd, "%08x %08x x%0d=%08x mem[%08x]=%08x\n",
-                        trace_pc, trace_insn, trace_rd, trace_rd_val,
-                        trace_mem_addr, trace_mem_val);
-            else if (trace_rd_we)
-                $fwrite(trace_fd, "%08x %08x x%0d=%08x\n",
-                        trace_pc, trace_insn, trace_rd, trace_rd_val);
-            else if (trace_mem_we)
-                $fwrite(trace_fd, "%08x %08x mem[%08x]=%08x\n",
-                        trace_pc, trace_insn, trace_mem_addr, trace_mem_val);
-            else
-                $fwrite(trace_fd, "%08x %08x\n", trace_pc, trace_insn);
+        if (rst) begin
+            irq <= 1'b0;
+        end else begin
+            if (dut.irq_taken)
+                irq <= 1'b0;                       // observed: drop the level
+            else if ((irq_at1 >= 0 && cyc == irq_at1) ||
+                     (irq_at2 >= 0 && cyc == irq_at2) ||
+                     (irq_at3 >= 0 && cyc == irq_at3))
+                irq <= 1'b1;
+        end
+    end
+
+    // ---- commit trace (docs/INTERFACES.md section 5 format), plus the
+    //      ISR-entry bookkeeping the ISS-alignment flow needs ---------------
+    //
+    // The reference model's --irq-after N means "trap at the boundary after N
+    // instructions have retired".  The RTL's N is not knowable in advance --
+    // it depends on how many instructions happened to be in MEM and WB when
+    // the interrupt landed -- so it is measured instead: when the trap fires
+    // the testbench remembers mtvec, and when the FIRST instruction at mtvec
+    // afterwards retires, the number of trace lines already written is exactly
+    // that N.  tools/run_tests.py feeds those numbers back to iss.py to
+    // generate a comparable reference trace.
+    always @(posedge clk) begin
+        if (!rst) begin
+            if (trace_valid && trace_fd != 0) begin
+                if (isr_armed && trace_pc == isr_mtvec) begin
+                    $display("IRQ_TAKEN retire_index=%0d mepc=%08x mcause=%08x mtvec=%08x",
+                             trace_lines, isr_mepc, dut.u_csr.mcause, isr_mtvec);
+                    isr_armed <= 1'b0;
+                end
+                if (trace_rd_we && trace_mem_we)
+                    $fwrite(trace_fd, "%08x %08x x%0d=%08x mem[%08x]=%08x\n",
+                            trace_pc, trace_insn, trace_rd, trace_rd_val,
+                            trace_mem_addr, trace_mem_val);
+                else if (trace_rd_we)
+                    $fwrite(trace_fd, "%08x %08x x%0d=%08x\n",
+                            trace_pc, trace_insn, trace_rd, trace_rd_val);
+                else if (trace_mem_we)
+                    $fwrite(trace_fd, "%08x %08x mem[%08x]=%08x\n",
+                            trace_pc, trace_insn, trace_mem_addr, trace_mem_val);
+                else
+                    $fwrite(trace_fd, "%08x %08x\n", trace_pc, trace_insn);
+                trace_lines <= trace_lines + 1;
+            end
+
+            // Trap fires: capture what the alignment flow and the report need.
+            // MIE/MPIE are still their pre-trap values during this cycle.
+            if (dut.irq_taken) begin
+                isr_armed  <= 1'b1;
+                isr_mepc   <= dut.ex_pc;
+                isr_mtvec  <= dut.u_csr.mtvec;
+                n_irq      <= n_irq + 1;
+                if (irq_verbose)
+                    $display("IRQ_TRAP cycle=%0d squashed_pc=%08x mtvec=%08x mie_before=%0d mpie_before=%0d",
+                             cyc, dut.ex_pc, dut.u_csr.mtvec,
+                             dut.u_csr.mstatus_mie, dut.u_csr.mstatus_mpie);
+            end
+            if (irq_taken_d1 && irq_verbose)
+                $display("IRQ_ENTERED mepc=%08x mcause=%08x mie_after=%0d mpie_after=%0d",
+                         dut.u_csr.mepc, dut.u_csr.mcause,
+                         dut.u_csr.mstatus_mie, dut.u_csr.mstatus_mpie);
+
+            if (dut.mret_taken && irq_verbose)
+                $display("MRET cycle=%0d pc=%08x -> mepc=%08x mie_before=%0d mpie_before=%0d",
+                         cyc, dut.ex_pc, dut.u_csr.mepc,
+                         dut.u_csr.mstatus_mie, dut.u_csr.mstatus_mpie);
+            if (mret_taken_d1 && irq_verbose)
+                $display("MRET_DONE mie_after=%0d mpie_after=%0d",
+                         dut.u_csr.mstatus_mie, dut.u_csr.mstatus_mpie);
+
+            irq_taken_d1  <= dut.irq_taken;
+            mret_taken_d1 <= dut.mret_taken;
         end
     end
 
     // ---- main sequence ----------------------------------------------------
     initial begin
-        rst         = 1'b1;
-        irq         = 1'b0;
-        cyc         = 0;
+        rst           = 1'b1;
+        cyc           = 0;
+        n_irq         = 0;
+        isr_armed     = 1'b0;
+        isr_mepc      = 32'b0;
+        isr_mtvec     = 32'b0;
+        trace_lines   = 0;
+        irq_taken_d1  = 1'b0;
+        mret_taken_d1 = 1'b0;
         failed      = 1'b0;
         fail_reason = "";
         reg_diffs   = 0;
@@ -170,9 +256,21 @@ module tb_program #(
         maxcyc = 200000;
         if (!$value$plusargs("MAXCYC=%d", maxcyc))
             maxcyc = 200000;
-        irq_at = -1;
-        if (!$value$plusargs("IRQ_AT=%d", irq_at))   // parsed now, used in step 7
-            irq_at = -1;
+        // +IRQ_AT= is accepted as an alias for +IRQ_AT1=.  Three separate
+        // plusargs rather than one comma list: $value$plusargs has no list
+        // form, and hand-parsing a comma-separated string out of a reg vector
+        // in Verilog-2001 would buy nothing here.
+        irq_at1 = -1;
+        irq_at2 = -1;
+        irq_at3 = -1;
+        if (!$value$plusargs("IRQ_AT1=%d", irq_at1))
+            if (!$value$plusargs("IRQ_AT=%d", irq_at1))
+                irq_at1 = -1;
+        if (!$value$plusargs("IRQ_AT2=%d", irq_at2))
+            irq_at2 = -1;
+        if (!$value$plusargs("IRQ_AT3=%d", irq_at3))
+            irq_at3 = -1;
+        irq_verbose = (irq_at1 >= 0) || (irq_at2 >= 0) || (irq_at3 >= 0);
         notrace = $test$plusargs("NOTRACE");
 
         $sformat(f_hex,   "%0s.hex",      prog);
@@ -180,8 +278,9 @@ module tb_program #(
         $sformat(f_regs,  "%0s.regs",     prog);
         $sformat(f_trace, "%0s.trace",    prog);
 
-        $display("tb_program: PROG=%0s FORWARDING=%0d BHT_ENABLE=%0d MAXCYC=%0d NOTRACE=%0d",
-                 prog, FORWARDING, BHT_ENABLE, maxcyc, notrace);
+        $display("tb_program: PROG=%0s FORWARDING=%0d BHT_ENABLE=%0d MAXCYC=%0d NOTRACE=%0d IRQ_AT=%0d,%0d,%0d",
+                 prog, FORWARDING, BHT_ENABLE, maxcyc, notrace,
+                 irq_at1, irq_at2, irq_at3);
 
         // -------- required inputs must exist --------
         probe = $fopen(f_hex, "r");
@@ -332,6 +431,9 @@ module tb_program #(
         else
             cpi_x1000 = (perf_cycles * 1000) / perf_insns;
 
+        $display("IRQ_SUMMARY taken=%0d mepc=%08x mcause=%08x mtvec=%08x mie=%0d mpie=%0d",
+                 n_irq, dut.u_csr.mepc, dut.u_csr.mcause, dut.u_csr.mtvec,
+                 dut.u_csr.mstatus_mie, dut.u_csr.mstatus_mpie);
         $display("PERF cycles=%0d insns=%0d lu_stalls=%0d flushes=%0d bht_pred=%0d bht_miss=%0d",
                  perf_cycles, perf_insns, perf_lu_stalls, perf_flushes,
                  perf_bht_pred, perf_bht_miss);

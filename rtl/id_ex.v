@@ -45,6 +45,7 @@ module id_ex (
     input  wire [2:0]  funct3_d,
     input  wire        branch_d,
     input  wire        jalr_d,
+    input  wire        pred_taken_d,    // BHT said "taken" and ID acted on it
     // ---- MEM control ----
     input  wire        mem_re_d,
     input  wire        mem_we_d,
@@ -76,6 +77,7 @@ module id_ex (
     output reg  [2:0]  funct3_q,
     output reg         branch_q,
     output reg         jalr_q,
+    output reg         pred_taken_q,
     output reg         mem_re_q,
     output reg         mem_we_q,
     output reg         reg_we_q,
@@ -90,7 +92,7 @@ module id_ex (
 );
 
     // Total payload width; only used to build the all-zero bubble constant.
-    localparam PW = 1+1+32+32+5+5+5+32+32+32+4+1+1+3+1+1+1+1+1+2+1+1+1+12+1+1+1;
+    localparam PW = 1+1+32+32+5+5+5+32+32+32+4+1+1+3+1+1+1+1+1+1+2+1+1+1+12+1+1+1;
 
     always @(posedge clk) begin
         if (rst || flush) begin
@@ -98,6 +100,7 @@ module id_ex (
              rs1_addr_q, rs2_addr_q, rd_addr_q,
              rs1_val_q, rs2_val_q, imm_q,
              alu_op_q, alu_src_a_q, alu_src_b_q, funct3_q, branch_q, jalr_q,
+             pred_taken_q,
              mem_re_q, mem_we_q,
              reg_we_q, wb_sel_q,
              csr_en_q, csr_we_q, csr_imm_q, csr_addr_q,
@@ -107,6 +110,7 @@ module id_ex (
              rs1_addr_q, rs2_addr_q, rd_addr_q,
              rs1_val_q, rs2_val_q, imm_q,
              alu_op_q, alu_src_a_q, alu_src_b_q, funct3_q, branch_q, jalr_q,
+             pred_taken_q,
              mem_re_q, mem_we_q,
              reg_we_q, wb_sel_q,
              csr_en_q, csr_we_q, csr_imm_q, csr_addr_q,
@@ -115,6 +119,7 @@ module id_ex (
              rs1_addr_d, rs2_addr_d, rd_addr_d,
              rs1_val_d, rs2_val_d, imm_d,
              alu_op_d, alu_src_a_d, alu_src_b_d, funct3_d, branch_d, jalr_d,
+             pred_taken_d,
              mem_re_d, mem_we_d,
              reg_we_d, wb_sel_d,
              csr_en_d, csr_we_d, csr_imm_d, csr_addr_d,

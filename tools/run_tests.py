@@ -8,6 +8,8 @@ counts taken from the testbench's PERF line.
     python tools/run_tests.py --dir asm/insn --notrace
     python tools/run_tests.py --dir asm/insn --dir asm/hazard
     python tools/run_tests.py --dir asm/prog --fwd 0        # CPI comparison
+    python tools/run_tests.py --dir asm/prog --irq-at 200,500   # interrupts
+    python tools/run_tests.py --dir asm/prog --bht 0        # predictor off
 
 A program is a `<name>.s` file; the testbench is invoked with
 `+PROG=<dir>/<name>` and reads `<name>.hex`, `<name>.regs`,
@@ -18,10 +20,17 @@ not fail the run -- generate them first (tools/gen_fixtures.py).
 `sim/run.sh` reuses a single work directory (`sim/work/tb_program/`), so the
 simulations must run one at a time; each xsim launch costs roughly 5-10 s.
 
+With --irq-at the external interrupt is driven and the commit trace is checked
+against a reference generated on the fly rather than against the committed
+`.trace` fixture -- see `run_irq_trace_check` for why that indirection is
+needed.  The register check still uses the committed `.regs` fixture, which is
+timing-independent by construction for the interrupt demo.
+
 Exit code: 0 if every program that ran PASSed, 1 otherwise.
 """
 
 import argparse
+import io
 import os
 import re
 import shutil
@@ -74,6 +83,73 @@ CPI_RE = re.compile(r"^CPI_x1000=(\d+)\s*$", re.M)
 PASS_RE = re.compile(r"^PASS: tb_program\b", re.M)
 FAIL_RE = re.compile(r"^FAIL: tb_program (.*)$", re.M)
 FAIL_ANY_RE = re.compile(r"^FAIL:(.*)$", re.M)
+IRQ_TAKEN_RE = re.compile(r"^IRQ_TAKEN retire_index=(\d+) ", re.M)
+
+RTL_TRACE = os.path.join("sim", "work", "tb_program", "rtl.trace")
+
+
+def read_trace(path):
+    """Read a commit trace as a list of lines with line endings normalised.
+
+    xsim's $fwrite opens files in text mode on Windows, so the RTL trace comes
+    out CRLF-terminated while iss.py writes LF.  The content is identical; only
+    the terminator differs, so both sides are normalised before comparing.
+    """
+    with io.open(path, "r", encoding="utf-8", errors="replace") as fh:
+        return [ln.rstrip("\r\n") for ln in fh]
+
+
+def run_irq_trace_check(base, retire_indices, out_dir):
+    """Diff the RTL trace against an ISS trace aligned to the RTL's interrupts.
+
+    iss.py's `--irq-after N` traps at the boundary after N instructions have
+    retired.  The RTL's N is not knowable in advance -- it depends on how many
+    instructions happened to be in MEM and WB when the level arrived -- so
+    tb_program measures it (the number of trace lines written before the first
+    instruction at mtvec retires) and prints it as `IRQ_TAKEN retire_index=`.
+    Feeding those numbers back to the ISS produces the trace the RTL should
+    have produced, and the two are then compared byte for byte.
+
+    Returns (n_diffs, [description lines]).
+    """
+    if not os.path.isfile(os.path.join(REPO_ROOT, RTL_TRACE)):
+        return 1, ["no rtl.trace produced by the simulation"]
+
+    ref = os.path.join(out_dir, os.path.basename(base) + ".iss.trace")
+    cmd = [sys.executable, os.path.join("tools", "iss.py"), base + ".hex",
+           "--trace", ref, "--max-insns", "200000"]
+    data = base + ".data.hex"
+    if os.path.isfile(os.path.join(REPO_ROOT, data)):
+        cmd += ["--data", data]
+    for k in retire_indices:
+        cmd += ["--irq-after", str(k)]
+    proc = subprocess.run(cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT)
+    if proc.returncode != 0:
+        return 1, ["iss.py exited %d: %s" % (
+            proc.returncode,
+            proc.stdout.decode("utf-8", "replace").strip().splitlines()[-1:])]
+
+    rtl = read_trace(os.path.join(REPO_ROOT, RTL_TRACE))
+    iss = read_trace(os.path.join(REPO_ROOT, ref) if not os.path.isabs(ref)
+                     else ref)
+
+    msgs = []
+    n = 0
+    for i in range(max(len(rtl), len(iss))):
+        a = rtl[i] if i < len(rtl) else "<eof>"
+        b = iss[i] if i < len(iss) else "<eof>"
+        if a != b:
+            n += 1
+            if n <= 10:
+                msgs.append("TRACEDIFF line %d: rtl=%s iss=%s" % (i + 1, a, b))
+    if len(rtl) != len(iss):
+        msgs.append("TRACE: line-count mismatch rtl=%d iss=%d"
+                    % (len(rtl), len(iss)))
+    if n:
+        msgs.append("TRACE: %d differing line(s) over %d compared lines"
+                    % (n, max(len(rtl), len(iss))))
+    return n, msgs
 
 
 def find_programs(dirs):
@@ -93,10 +169,18 @@ def find_programs(dirs):
     return progs
 
 
-def run_one(prog, notrace, fwd, bht, maxcyc, verbose):
+def run_one(prog, notrace, fwd, bht, maxcyc, verbose, irq_at=None,
+            out_dir=None):
     cmd = [BASH, "sim/run.sh", "tb_program", "--plusarg", "+PROG=%s" % prog]
-    if notrace:
+    # With interrupts the in-testbench trace comparison is bypassed: the
+    # committed .trace fixture is aligned to the reference model's interrupt
+    # schedule, not the RTL's, so the diff is done here instead against a
+    # freshly generated, RTL-aligned reference.
+    if notrace or irq_at:
         cmd += ["--plusarg", "+NOTRACE"]
+    if irq_at:
+        for i, c in enumerate(irq_at[:3]):
+            cmd += ["--plusarg", "+IRQ_AT%d=%d" % (i + 1, c)]
     if maxcyc is not None:
         cmd += ["--plusarg", "+MAXCYC=%d" % maxcyc]
     if fwd is not None:
@@ -127,8 +211,21 @@ def run_one(prog, notrace, fwd, bht, maxcyc, verbose):
         "bht_pred": int(perf.group(5)) if perf else 0,
         "bht_miss": int(perf.group(6)) if perf else 0,
         "cpi_x1000": int(cpi.group(1)) if cpi else 0,
+        "irq_taken": len(IRQ_TAKEN_RE.findall(out)),
         "log": out,
     }
+
+    if irq_at:
+        ks = [int(m) for m in IRQ_TAKEN_RE.findall(out)]
+        ndiff, msgs = run_irq_trace_check(prog, ks, out_dir or REPO_ROOT)
+        result["log"] = out + "\n" + "\n".join(msgs)
+        if ndiff and result["passed"]:
+            result["passed"] = False
+            result["reason"] = "%d trace line mismatch(es) vs ISS(irq-after %s)" % (
+                ndiff, ",".join(str(k) for k in ks) or "none")
+        if verbose:
+            for m in msgs:
+                print(m)
     return result
 
 
@@ -146,11 +243,29 @@ def main():
                     help="override the BHT_ENABLE parameter")
     ap.add_argument("--maxcyc", type=int, default=None,
                     help="override the testbench cycle budget")
+    ap.add_argument("--irq-at", default=None, metavar="C1[,C2[,C3]]",
+                    help="drive the external interrupt at these cycle numbers "
+                         "(after reset release) and check the commit trace "
+                         "against an ISS run aligned to the RTL's own "
+                         "interrupt points")
     ap.add_argument("--only", default=None, metavar="SUBSTR",
                     help="only run programs whose path contains SUBSTR")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="echo each simulation log")
     args = ap.parse_args()
+
+    irq_at = None
+    if args.irq_at:
+        try:
+            irq_at = [int(x, 0) for x in args.irq_at.split(",") if x.strip()]
+        except ValueError:
+            print("ERROR: --irq-at wants a comma-separated list of cycle "
+                  "numbers", file=sys.stderr)
+            return 1
+        if len(irq_at) > 3:
+            print("ERROR: --irq-at supports at most 3 cycles "
+                  "(tb_program has +IRQ_AT1..3)", file=sys.stderr)
+            return 1
 
     dirs = args.dirs or ["asm/insn"]
     progs = find_programs(dirs)
@@ -170,7 +285,7 @@ def main():
         regsf = os.path.join(REPO_ROOT, base + ".regs")
         missing = [os.path.basename(f) for f in (hexf, regsf)
                    if not os.path.isfile(f)]
-        if not args.notrace and not os.path.isfile(
+        if not args.notrace and not irq_at and not os.path.isfile(
                 os.path.join(REPO_ROOT, base + ".trace")):
             missing.append(os.path.basename(base) + ".trace")
         if missing:
@@ -179,7 +294,9 @@ def main():
             continue
 
         r = run_one(base, args.notrace, args.fwd, args.bht, args.maxcyc,
-                    args.verbose)
+                    args.verbose, irq_at=irq_at,
+                    out_dir=os.path.join(REPO_ROOT, "sim", "work",
+                                         "tb_program"))
         results.append(r)
         print("%-4s %-28s cycles=%-7d insns=%-6d %s" % (
             "PASS" if r["passed"] else "FAIL", base, r["cycles"], r["insns"],
@@ -188,6 +305,7 @@ def main():
             for line in r["log"].splitlines():
                 if (line.startswith("REGDIFF") or line.startswith("TRACEDIFF")
                         or line.startswith("ERROR") or line.startswith("TRACE:")
+                        or line.startswith("IRQ_TAKEN")
                         or line.startswith("    rtl =")
                         or line.startswith("    iss =")):
                     print("       %s" % line)
@@ -198,22 +316,28 @@ def main():
 
     print("")
     print("=" * 96)
-    print("%-34s %8s %8s %9s %8s %8s %9s" % (
-        "program", "result", "cycles", "insns", "stalls", "flushes",
-        "CPI_x1000"))
+    print("%-30s %6s %8s %8s %7s %7s %9s %6s %6s %5s" % (
+        "program", "result", "cycles", "insns", "stalls", "flush",
+        "CPI_x1000", "bpred", "bmiss", "acc%"))
     print("-" * 96)
     for r in results:
-        print("%-34s %8s %8d %9d %8d %8d %9d" % (
+        acc = ("%5.1f" % (100.0 * (r["bht_pred"] - r["bht_miss"])
+                          / r["bht_pred"])) if r["bht_pred"] else "    -"
+        print("%-30s %6s %8d %8d %7d %7d %9d %6d %6d %s" % (
             r["prog"], "PASS" if r["passed"] else "FAIL", r["cycles"],
-            r["insns"], r["lu_stalls"], r["flushes"], r["cpi_x1000"]))
+            r["insns"], r["lu_stalls"], r["flushes"], r["cpi_x1000"],
+            r["bht_pred"], r["bht_miss"], acc))
     print("-" * 96)
     tot_cyc = sum(r["cycles"] for r in results)
     tot_ins = sum(r["insns"] for r in results)
     agg = (tot_cyc * 1000 // tot_ins) if tot_ins else 0
-    print("%-34s %8s %8d %9d %8d %8d %9d" % (
+    tot_bp = sum(r["bht_pred"] for r in results)
+    tot_bm = sum(r["bht_miss"] for r in results)
+    tot_acc = ("%5.1f" % (100.0 * (tot_bp - tot_bm) / tot_bp)) if tot_bp else "    -"
+    print("%-30s %6s %8d %8d %7d %7d %9d %6d %6d %s" % (
         "TOTAL (%d programs)" % len(results), "", tot_cyc, tot_ins,
         sum(r["lu_stalls"] for r in results),
-        sum(r["flushes"] for r in results), agg))
+        sum(r["flushes"] for r in results), agg, tot_bp, tot_bm, tot_acc))
     print("=" * 96)
     print("%d passed, %d failed, %d skipped, %.1f s" % (
         npass, nfail, len(skipped), elapsed))

@@ -124,22 +124,24 @@ module hazard_unit #(
 
     wire need_stall = FWD_ON ? load_use : raw_any;
 
-    // Never stall an instruction that is about to be flushed, and never stall
-    // one that is itself redirecting the PC.
+    // No point stalling an instruction that is about to be flushed.
     //
-    // The `redirect_id` term is a safety interlock, not an optimisation.  A
-    // stall bubbles ID/EX while holding IF/ID, which is correct for an
-    // instruction that is waiting -- but a `jal` in ID has ALREADY committed
-    // the machine to its target by the time the stall would take effect, so
-    // holding it would redirect the PC and then delete the jal itself,
-    // silently losing its link-register write.  A `jal` reads no registers, so
-    // `id_uses_rs1`/`id_uses_rs2` are both 0 and `need_stall` cannot fire on
-    // one today; this term makes that invariant explicit rather than
-    // load-bearing.  (Verified: removing the `id_uses_rsN` qualifiers below
-    // WITHOUT this term makes asm/prog/bloop lose one retired instruction per
-    // loop iteration; with this term it stays correct.)
-    assign stall = id_valid && need_stall &&
-                   !redirect_ex && !redirect_id && !ebreak_pending;
+    // Note the asymmetry with `redirect_id`, which is deliberately NOT in this
+    // term.  An ID-stage redirect (a `jal`, or a branch the BHT predicted
+    // taken) is raised BY the instruction in ID, and acting on it while that
+    // instruction is stalled would destroy it: the redirect forces the fetch
+    // enable high, so IF/ID reloads and is then cleared by `flush_if`, while
+    // the stall bubbles ID/EX -- the instruction ends up in neither register
+    // and its register write is silently lost.  The rule is therefore
+    // "an ID redirect only fires in the cycle the ID instruction actually
+    // advances", and cpu_top enforces it by gating both `jal_taken` and the
+    // BHT redirect with `~stall`.  Putting `redirect_id` here as well would
+    // close a combinational loop (stall -> redirect_id -> stall) with two
+    // stable states, so the gating lives on that side only.
+    //
+    // The cost of the rule is at most one cycle: a stalled jal or predicted
+    // branch simply redirects on the cycle the stall clears.
+    assign stall = id_valid && need_stall && !redirect_ex && !ebreak_pending;
 
     // ---- flushes ----------------------------------------------------------
     assign flush_if = redirect_ex || redirect_id || ebreak_pending;

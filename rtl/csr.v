@@ -39,13 +39,14 @@
 //
 // mret:  MIE <- MPIE ; MPIE <- 1 ; cpu_top redirects the PC to mepc.
 //
-// STEP 7 TODO (external interrupts): the `irq` input and the `irq_pending`
-// qualification below are already correct, but cpu_top deliberately does NOT
-// use irq_pending yet -- it raises `trap` only for ecall.  Step 7 turns the
-// interrupt on by ORing irq_pending into cpu_top's trap condition (with
-// trap_cause = 32'h8000000B and trap_pc = the EX-stage PC) and by squashing the
-// interrupted instruction the same way ecall is squashed today.  Nothing in
-// this file has to change.
+// External interrupts: `irq` is a level, qualified here by mstatus.MIE and
+// mie.MEIE into `irq_pending`.  cpu_top raises `trap` with
+// trap_cause = 0x8000000B when irq_pending coincides with a valid instruction
+// in EX; that instruction is squashed rather than retired and mepc points AT
+// it, so the handler must NOT advance mepc (the opposite of the ecall rule
+// above).  Because the qualification is done here, a program that never sets
+// MIE/MEIE is completely unaffected by `irq`: no trap, no mcause write, no
+// cycle cost.
 //
 // Verilog-2001, synthesizable.
 //=============================================================================

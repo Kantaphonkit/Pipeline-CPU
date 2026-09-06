@@ -661,18 +661,58 @@ a flush is happening, `flush` beats `stall` inside every pipeline register
 `~halt & (redirect | ~stall)` so the PC and instruction memory advance to the
 redirect target even during a stall cycle.
 
-One consequence is easy to get wrong: **a `jal` must never be stalled.** A
-stall holds IF/ID and bubbles ID/EX, which is right for an instruction that is
-waiting — but a `jal` in ID has already committed the machine to its target by
-the time the stall takes effect, so holding it would redirect the PC and then
-delete the `jal` itself, silently losing its link-register write. A `jal` reads
-no registers, so the interlock condition cannot fire on one; the hazard unit
-nevertheless suppresses `stall` whenever `redirect_id` is asserted, so the
-invariant is enforced structurally rather than left to depend on the decoder.
-Removing that term and simultaneously over-approximating the interlock (taking
-rs1/rs2 straight from the instruction bits instead of asking the decoder
-whether they are really read) makes `asm/prog/bloop` lose exactly one retired
-instruction per loop iteration — which is how the term earned its place.
+One consequence is easy to get wrong: **a `jal` (or a branch the BHT predicts
+taken) must never redirect on a cycle its own instruction is being stalled.**
+A stall holds IF/ID and bubbles ID/EX, which is right for an instruction that
+is waiting on a register — but a `jal` in ID has already committed the machine
+to its target the moment it decodes, and a predicted-taken branch commits to
+the BHT's target the same way. If either redirected while the stall was also
+in effect, the fetch enable would reload IF/ID with the target on the very
+cycle the stalled instruction itself was being bubbled out of ID/EX, silently
+losing its link-register write (`jal`) or simply vanishing (a predicted
+branch). Neither instruction reads a register that could raise the load-use
+interlock on its own account, but a stall raised by an unrelated, older
+instruction can still be active on the same cycle.
+
+An earlier version of this design guarded against exactly that from the stall
+side, adding a `!redirect_id` term to `stall` so an ID-stage redirect always
+suppressed its own instruction's stall. That stopped working once the branch
+predictor gave `redirect_id` a second source: `redirect_id = jal_taken |
+bht_taken`, and `bht_taken` is driven by `id_pred_taken`, which does not
+depend on `stall`. A `stall` expression that reads `redirect_id` would then
+depend on a signal that would itself need to read `stall` — `stall →
+redirect_id → stall`, a combinational loop with two stable states.
+
+The fix moves the gating to the redirect side instead. In `rtl/cpu_top.v`,
+both `jal_taken` and `bht_taken` are qualified with `~stall & ~ebreak_pending`:
+
+```
+assign jal_taken   = if_id_valid & id_jal & ~stall & ~ebreak_pending;
+assign bht_taken   = id_pred_taken        & ~stall & ~ebreak_pending;
+assign redirect_id = jal_taken | bht_taken;
+```
+
+so `redirect_id` is structurally zero on any cycle `stall` is asserted, without
+either signal needing to reference the other. `hazard_unit.v`'s `stall` output
+no longer mentions `redirect_id` at all — it is purely a function of the
+load-use (or RAW, at `FORWARDING = 0`) condition. The rule is now: **an
+ID-stage redirect (`jal`, or a predicted-taken branch) only fires in the cycle
+the ID instruction actually advances.** The consequence the old term protected
+is unchanged: a stalled `jal` or a stalled predicted-taken branch never loses
+its link write or its redirect, it just redirects one cycle later, once the
+stall clears. The cost is still at most one extra cycle.
+
+This also retires a latent bug the old mechanism had. Section 10.4 records a
+mutation that over-approximates the load-use interlock — treating every
+instruction as reading whatever sits in its raw `rs1`/`rs2` fields, instead of
+asking the decoder whether it really does — which spuriously stalls a `jal`.
+Under the old `!redirect_id`-in-`stall` rule, that mutation broke
+`asm/prog/bloop`, losing exactly one retired instruction per loop iteration:
+`redirect_id` suppressed the stall, so the `jal` redirected on the same cycle
+the (spurious) stall bubbled it out of ID/EX, and its link write never
+happened. Under the current rule the same mutation only costs cycles (section
+10.4), because a `jal` structurally cannot redirect while stalled — it simply
+waits, then redirects.
 
 `asm/hazard/branch_flush.s` puts poison instructions (`addi x10, x0, 999`) in
 every shadow slot; if any of them survives, the register compare and the commit
@@ -861,14 +901,345 @@ has an `mepc` input alongside PC+4, the branch target, the `jal` target, the
 `mtvec` is used in **direct mode**: the vector address is `mtvec` with its low
 two bits forced to zero; vectored mode is not implemented.
 
+### 8.3 Interrupt entry timing
+
+The trap point is EX, so the entry costs the same two bubbles as a mispredicted
+branch. Writing `I(n)` for the instruction that happens to be in EX when the
+level is sampled:
+
+```
+                  c1    c2    c3    c4    c5    c6    c7
+  I(n-2)          EX    MEM   WB                             retires normally
+  I(n-1)          ID    EX    MEM   WB                       retires normally
+  I(n)            IF    ID    EX    --                        SQUASHED
+  I(n+1)                IF    ID    --                        killed (flush_id)
+  I(n+2)                      IF    --                        killed (flush_if)
+  ISR[0] (mtvec)                    IF    ID    EX    MEM
+                                ^
+                                c3: irq sampled with a valid instruction in EX
+                                    mepc   <- PC of I(n)
+                                    mcause <- 0x8000000B
+                                    MPIE   <- MIE ; MIE <- 0
+                                    PC     <- mtvec
+                                    EX/MEM flushed -> I(n) never retires
+```
+
+Three properties fall out of that picture and each is checked directly by
+`tb/tb_irq.v`:
+
+- `I(n)` is **cancelled, not delayed**. It is squashed at the EX/MEM boundary,
+  so it never reaches memory or the register file, and it does not appear in
+  the commit trace. It runs for the first time after `mret` returns to `mepc`.
+- `I(n-1)` and `I(n-2)` **do retire**. They are older than the interrupted
+  instruction and are already past EX, so up to two more instructions commit
+  after the trap fires and before the handler's first instruction does. This is
+  the whole reason the reference-model alignment of section 9.2 is needed.
+- The interrupt **outranks an `ecall`** occupying the same EX slot. `mepc` then
+  points at the `ecall`, which re-executes after the handler returns. The
+  reference simulator samples `irq` at the instruction boundary before decoding,
+  so it makes the same choice, and this is the standard RISC-V ordering.
+
+The `irq` input is a **level**. It is qualified inside `csr.v` by `mstatus.MIE`
+and `mie.MEIE`, so a program that never enables interrupts is completely
+unaffected by it: no trap, no `mcause` write, not one extra cycle. A level
+raised while the CPU is inside its handler (where `MIE = 0`) is not lost — it is
+taken as soon as `mret` restores `MIE`, three cycles later.
+
 ---
 
 ## 9. Bonus features
 
-<!-- TODO(step 7): 2-bit saturating-counter BHT (64 entries, indexed PC[7:2]),
-its integration with the EX-stage flush path and the prediction-accuracy
-counters; interrupt demonstration program; the I-cache section (designed, not
-implemented — direct-mapped 128 x 16 B, and why it was cut). -->
+Two of the three bonus items in the task statement are implemented and measured:
+branch prediction and interrupts. The third, an instruction cache, is designed
+on paper and deliberately not built; section 9.3 says why.
+
+### 9.1 Branch prediction: a 64-entry 2-bit BHT
+
+#### What it predicts, and what it does not
+
+`rtl/bht.v` is a **direction** predictor only. It answers "will this
+conditional branch be taken?" and nothing else. There is no branch target
+buffer, because the target of a conditional branch is `PC + B-immediate` and the
+decode stage already computes that from information it has anyway. Dropping the
+BTB removes a tagged CAM from the design and costs one cycle on a correctly
+predicted taken branch, which the cost table below accounts for honestly.
+
+The table holds 64 two-bit saturating counters indexed by `pc[7:2]` — bits 2..7
+of the byte address, covering a 256-byte window of instruction space. The table
+is **untagged**: addresses 256 bytes apart share a counter. That aliasing is the
+intended cost of a cheap table; it degrades accuracy and never correctness.
+
+#### The counter FSM
+
+```
+                 taken            taken            taken
+              ----------->     ----------->     ----------->
+      +-----------+     +-----------+     +-----------+     +-----------+
+      |    00     |     |    01     |     |    10     |     |    11     |
+      |  strongly |     |   weakly  |     |   weakly  |     |  strongly |
+      | not taken |     | not taken |     |   taken   |     |   taken   |
+      +-----------+     +-----------+     +-----------+     +-----------+
+              <-----------     <-----------     <-----------
+                not taken        not taken        not taken
+
+      +--+ not taken                                   taken +--+
+      |  | (saturates, stays 00)      (saturates, stays 11)  |  |
+      +->+                                                   +<-+
+
+      prediction = state[1]     00, 01 -> not taken
+                                10, 11 -> taken
+      reset state = 01 (weakly not taken)
+```
+
+Resetting to `01` rather than `00` or `10` is deliberate: an unvisited branch
+then behaves exactly like the static not-taken machine, so turning the predictor
+on can never make a *first* encounter worse, and a loop's backward branch
+reaches "taken" after a single observation.
+
+#### Where each step happens in the pipeline
+
+| Step | Stage | Detail |
+|---|---|---|
+| Lookup | IF | indexed by the PC the instruction memory is reading, in parallel with the fetch — off the critical path |
+| Carry | IF/ID | the 2-bit counter state travels with the instruction, so ID needs no second table read |
+| Act | ID | if the instruction is a conditional branch and the carried state predicts taken, redirect the PC to `PC + B-imm` — the same 1-bubble path `jal` uses |
+| Resolve | EX | `mispredict = predicted_taken != actual_taken`; on a mispredict redirect to the correct target and flush 2 |
+| Update | EX | indexed by the EX-stage PC, with the resolved outcome, saturating |
+
+Only the direction is carried into EX (one flip-flop). The predicted target is
+**not** carried: it is `ex_pc + ex_imm`, and both of those are already in the
+ID/EX register, so recomputing it in EX costs an adder that already exists and
+saves 32 flip-flops.
+
+A lookup and an update of the same index in the same cycle is allowed, and the
+lookup returns the old value. That costs at most one extra mispredict on a
+branch that recurs faster than the pipeline depth, and it removes a bypass.
+
+#### Cost table
+
+| Prediction | Outcome | Bubbles | Why |
+|---|---|---|---|
+| not taken | not taken | **0** | nothing is redirected; the fall-through was already being fetched |
+| taken | taken | **1** | the ID-stage redirect kills the one instruction in flight behind the branch |
+| not taken | taken | **2** | the EX-stage redirect kills the two instructions in ID and IF |
+| taken | not taken | **2** | the ID redirect kills one instruction, then the EX redirect kills the wrongly fetched target and refetches the fall-through |
+
+```
+  Correctly predicted TAKEN -- 1 bubble        Mispredicted (NT -> T) -- 2 bubbles
+
+            c1   c2   c3   c4   c5                      c1   c2   c3   c4   c5   c6
+  br (T)    IF   ID   EX   MEM  WB             br (T)   IF   ID   EX   MEM  WB
+  br+4           IF   x                        br+4          IF   ID   x
+  target              IF   ID   EX             br+8               IF   x
+                 ^                             target                  IF   ID   EX
+                 ID redirect (flush_if)                          ^
+                                                                 EX redirect
+                                                                 (flush_if + flush_id)
+
+  Mispredicted (T -> NT) -- 2 bubbles
+
+            c1   c2   c3   c4   c5   c6
+  br (NT)   IF   ID   EX   MEM  WB
+  br+4           IF   x                    killed at c2 by the ID redirect
+  target              IF   x               killed at c3 by the EX redirect
+  br+4 (refetched)         IF   ID   EX
+```
+
+The asymmetry is worth stating plainly in the presentation: this predictor can
+only *win* on branches that are actually taken, because a correctly predicted
+not-taken branch already cost nothing. On a workload whose conditional branches
+are mostly loop **exits** — not taken almost every time — the BHT has nothing to
+gain and a mispredict to lose.
+
+#### Measured results
+
+Every figure below is from `python tools/run_tests.py --dir asm/prog` with
+forwarding on, `--bht 1` against `--bht 0`. Accuracy is
+`(branches − mispredicts) / branches`, from the `bht_pred` and `bht_miss`
+counters, which count at both settings.
+
+| Program | BHT off, cycles | BHT on, cycles | Change | Branches | Mispredicts | Accuracy | Static-not-taken accuracy |
+|---|---|---|---|---|---|---|---|
+| `fib` | 900 | **821** | −8.8 % | 91 | 6 | **93.4 %** | 3.3 % |
+| `bsort` | 1880 | 1890 | +0.5 % | 288 | 71 | 75.3 % | 70.1 % |
+| `bloop` | 4019 | 4419 | +10.0 % | 891 | 446 | 49.9 % | 72.4 % |
+| `irq_demo` | 849 | 849 | 0.0 % | 201 | 1 | 99.5 % | 99.5 % |
+| `asm/smoke` | 80 | 80 | 0.0 % | 6 | 6 | 0.0 % | 0.0 % |
+| `asm/insn` (46) | 1209 | 1216 | +0.6 % | 39 | 25 | 35.9 % | 35.9 % |
+
+`fib` is the clean win: its inner loop is a taken backward branch, so 93.4 %
+accuracy converts directly into 79 saved cycles.
+
+`bloop` gets *worse*, and understanding why is more instructive than the win.
+Its own header comment says it was written to defeat a 2-bit predictor: the
+inner `beq` tests `k & 1` and therefore alternates taken/not-taken on every
+single iteration, which is precisely the pattern a saturating counter cannot
+learn — it oscillates between `01` and `10` and mispredicts 100 % of the time.
+That branch runs 400 times. Its other 491 conditional branches are all loop
+*exits* (`bge`), not taken on all but the last pass of each run, so the
+predictor correctly predicts them not-taken and saves nothing, because static
+not-taken was already free. The arithmetic closes exactly:
+
+- static not-taken: 246 taken branches × 2 bubbles = 492 penalty cycles;
+- with the BHT: 446 mispredicts × 2 + 0 correctly-predicted-taken × 1 = 892;
+- difference = 400 = the number of alternating-branch iterations, and the
+  measured difference is 4419 − 4019 = 400 cycles.
+
+`bloop` also uses `j` (a `jal`) for all three loop back-edges, so none of its
+back-edges is a conditional branch the predictor could win on. It is an
+adversarial benchmark, and reporting it is more useful than hiding it: a 2-bit
+BHT is a cheap heuristic, not a guarantee, and the honest summary is "helps
+loop-dominated code, neutral on exit-dominated code, hurts on alternating
+branches".
+
+The `asm/insn` row shows the aliasing cost in miniature: 39 one-shot branches
+spread over a small address range, where the untagged index means one branch's
+training pollutes another's. Seven taken branches were predicted correctly
+(saving 7 cycles) but seven not-taken branches were mispredicted as taken
+(costing 14), for a net +7.
+
+#### The predictor cannot break the machine
+
+A mutation check makes that concrete: training the counters with the
+**inverted** outcome (`update_taken = ~branch_cond`) collapses accuracy —
+`fib` 93.4 % → 3.3 %, `bsort` 75.3 % → 25.3 %, `bloop` 49.9 % → 27.9 %,
+`irq_demo` 99.5 % → 1.0 % — and costs cycles (`bloop` 4419 → 4857), yet **all
+four programs still pass their byte-exact commit-trace diff**. The prediction is
+a hint that only ever changes *when* instructions are fetched; correctness rests
+entirely on the EX-stage resolution and flush.
+
+`BHT_ENABLE = 0` forces every lookup to "not taken" and writes no counter, and
+reproduces the static machine's cycle counts exactly — 4019 / 1880 / 900 on
+`bloop` / `bsort` / `fib`, identical to the pre-predictor build. With the
+outputs constant, synthesis prunes the array entirely.
+
+`tb/tb_bht.v` unit-tests the module standalone with 2600 checks: the reset
+state, saturation at both ends, the `state[1]` prediction boundary, index
+aliasing (`pc` versus `pc + 256` versus `pc + 4`), the same-cycle read/write
+ordering, `ENABLE = 0` inertness, and 600 randomised update/lookup steps against
+a behavioural model.
+
+### 9.2 Interrupt demonstration
+
+`asm/prog/irq_demo.s` installs a handler in `mtvec`, enables `mie.MEIE` and
+`mstatus.MIE`, and then runs a 200-iteration counting loop. The ISR pushes two
+scratch registers, increments a visit counter, pops them and returns with
+`mret`. It is written so that the architectural result does **not** depend on
+when the interrupts land: the loop counter reaches 200 and the visit counter
+equals the number of interrupts taken, whatever the timing.
+
+The testbench drives `irq` as a level (`+IRQ_AT1/2/3=<cycle>`), holding it until
+it observes the trap and then dropping it. Two runs are reported:
+
+```
+irq at cycles 200 and 500 (both outside the handler)
+
+  IRQ_TRAP    cycle=201  squashed_pc=0000003c  mtvec=0000004c  mie=1  mpie=0
+  IRQ_ENTERED mepc=0000003c  mcause=8000000b   mie=0  mpie=1
+  IRQ_TAKEN   retire_index=153
+  MRET        cycle=211  pc=00000068 -> mepc=0000003c  mie=0  mpie=1
+  MRET_DONE   mie=1  mpie=1
+  IRQ_TRAP    cycle=502  squashed_pc=0000003c  mtvec=0000004c  mie=1  mpie=1
+  IRQ_ENTERED mepc=0000003c  mcause=8000000b   mie=0  mpie=1
+  IRQ_TAKEN   retire_index=377
+  MRET        cycle=512  ...                    mie=1  mpie=1
+  IRQ_SUMMARY taken=2  mepc=0000003c  mcause=8000000b  mtvec=0000004c
+```
+
+```
+irq at cycles 200 and 205 (the second lands INSIDE the handler, MIE = 0)
+
+  IRQ_TRAP  cycle=201 ...        first interrupt taken normally
+  MRET      cycle=211 ...        MIE restored to 1
+  IRQ_TRAP  cycle=214 ...        held level taken 3 cycles after mret
+```
+
+That second run is the level-versus-pulse difference made visible: the interrupt
+is not lost while the handler has interrupts disabled, it simply waits.
+
+An `irq` held high for an entire run of `fib`, `bsort` or `bloop` — none of
+which ever sets `MIE` — produces `taken=0`, leaves `mcause` at zero, and gives
+cycle counts identical to the runs without it.
+
+#### Aligning the RTL against the reference model
+
+Diff-testing an interrupted program against the golden simulator needs one extra
+step, and it is worth spelling out because it is a genuine methodological
+problem rather than a detail.
+
+The simulator's interrupt is scheduled by *retirement index*: `--irq-after N`
+traps at the instruction boundary once N instructions have retired. The RTL has
+no such notion — its interrupt is a level sampled in EX, and how many
+instructions have retired at that moment depends on what happened to be in MEM
+and WB, which in turn depends on the cycle chosen, the forwarding setting and
+the branch predictor. Comparing the RTL against a trace generated with a fixed
+`--irq-after` would compare two different executions.
+
+So the index is **measured from the RTL rather than assumed**. When the trap
+fires, `tb_program` records `mtvec`; when the first instruction at `mtvec`
+subsequently retires, the number of trace lines already written is exactly the
+reference model's N — every instruction older than the squashed one, and nothing
+younger, has committed by then. The testbench prints it as
+`IRQ_TAKEN retire_index=<N>`, and `tools/run_tests.py --irq-at` feeds those
+measured values back into `iss.py --irq-after` and diffs the two traces byte for
+byte (normalising line endings, since xsim writes CRLF on Windows and the
+simulator writes LF).
+
+With that alignment, `irq_demo` matches the reference model **exactly, all 633
+lines**, at every combination of `FORWARDING` and `BHT_ENABLE`. The register
+check still uses the committed `.regs` fixture, which is timing-independent by
+construction.
+
+#### Directed check
+
+`tb/tb_irq.v` verifies the round trip structurally rather than by diffing,
+with 21 assertions over the whole trap: that the trap only fires with a valid
+instruction in EX; that `mepc` equals the squashed instruction's PC and
+`mcause` is `0x8000000B`; that `MPIE` captures the old `MIE` and `MIE` is
+cleared on entry and restored by `mret`; that at most two instructions retire
+between the trap and the handler's first instruction; that the squashed
+instruction does **not** retire inside the handler; that the first instruction
+to retire after `mret` is the one at `mepc`; and that the program still finishes
+with the loop counter at 200, the ISR visit counter at 1 and every callee-saved
+value restored. It passes at both forwarding settings, both predictor settings
+and four different interrupt cycles.
+
+### 9.3 Instruction cache — designed, not implemented
+
+The third bonus item is written up but not built. The design that was on the
+table:
+
+| Parameter | Value |
+|---|---|
+| Organisation | direct-mapped |
+| Lines | 128 |
+| Line size | 16 B (4 instructions) |
+| Capacity | 2 KB |
+| Index | `pc[10:4]` |
+| Tag | `pc[31:11]` |
+| Write policy | none needed — instruction fetch is read-only |
+| Miss handling | stall IF, fetch four words from main memory, fill, replay |
+
+It was cut for two reasons, and both are worth stating rather than glossing:
+
+1. **There is nothing to measure.** The cache would sit in front of a memory
+   that already answers in one cycle. A hit and a miss would cost the same,
+   so the hit-rate counter would be the only observable output and the CPI
+   would not move at all. Making it meaningful requires a multi-cycle main
+   memory model — a second memory subsystem, a stall path through IF, and a
+   refill state machine — which is a larger change than the cache itself.
+2. **The measurement would be trivial anyway.** Instruction memory is 4 KB and
+   the largest test program is well under 2 KB, so after the first pass the
+   entire working set is resident and the hit rate would be ~99 % on every
+   program. A number that is 99 % regardless of the program says nothing about
+   the design.
+
+The engineering judgement was that a working, measured branch predictor and a
+working, verified interrupt are worth more than a third bonus whose headline
+figure would be an artefact of the test setup. The pipeline is structured so the
+cache could be added later without touching the datapath: `imem.v` already
+presents a synchronous-read interface with an enable, and IF already has a stall
+path.
 
 ---
 
@@ -1008,6 +1379,8 @@ silently short-circuits). The injected bugs and the check that caught each:
 | `rd != 0` guard removed from the forwarding comparison (forwards from `x0`) | `forward_unit.v` | `asm/hazard/x0_hazard.s` |
 | Load-use interlock disabled | `hazard_unit.v` | `asm/hazard/load_use.s` |
 | `lb` sign extension removed (treated as `lbu`) | `dmem.v` | `tb_dmem`, and `asm/insn/lb.s` |
+| BHT trained with the inverted outcome (`update_taken = ~branch_cond`) | `bht.v` | *nothing* — see below |
+| Load-use interlock qualifiers (`id_uses_rs1`/`id_uses_rs2`) removed | `hazard_unit.v` | *nothing* — see below |
 
 The last four are datapath-level bugs with no meaningful unit-level DUT of
 their own (forwarding and the load-use stall only manifest across the pipeline
@@ -1016,6 +1389,32 @@ boundary they cross), so they are caught by the hazard programs of section
 module testbench — consistent with the fact that `forward_unit.v` and
 `hazard_unit.v` are combinational functions of pipeline-register fields, not
 of anything a standalone testbench could drive meaningfully on its own.
+
+The last two rows are a different kind of mutation, included deliberately even
+though nothing flags them as `FAIL`: they probe what the trace diff can and
+cannot detect, rather than catching a bug.
+
+Training the BHT with the inverted outcome collapses prediction accuracy —
+`fib` 93.4 % → 3.3 %, `bsort` 75.3 % → 25.3 %, `bloop` 49.9 % → 27.9 %,
+`irq_demo` 99.5 % → 1.0 % — and costs cycles (`bloop` 4419 → 4857 cycles), yet
+**every program still passes the byte-exact commit-trace diff**. That is not a
+hole in the test suite; it is the correct outcome. The predictor only changes
+*when* instructions are fetched, never what they compute — correctness rests
+entirely on the EX-stage resolution and flush (section 6.3), and the trace
+diff is exactly the check that should be blind to a misprediction rate.
+
+Removing the load-use interlock's `id_uses_rs1`/`id_uses_rs2` qualifiers — so
+the hazard unit stalls on whatever sits in an instruction's raw `rs1`/`rs2`
+fields, over-approximating the interlock to instructions that do not actually
+read them (`lui`, `auipc`, `jal`, the `csrr*i` forms, `ecall`) — is likewise
+still correct in every suite; it only costs cycles (`bloop` at
+`FORWARDING = 0`: 5313 → 5515). This is the same mutation that, before the
+ID-redirect rule of section 6.3 was adopted, used to break `asm/prog/bloop`
+outright: a spuriously stalled `jal` was bubbled out of ID/EX right after it
+had already redirected, silently losing its link write — which is why that
+rule exists. Under the current rule (an ID-stage redirect only fires once its
+own instruction is no longer stalled) the same mutation is harmless to
+correctness and costs only cycles.
 
 ### 10.5 Per-instruction programs (`asm/insn/`, 46 programs)
 
@@ -1068,6 +1467,7 @@ broken:
 | `fib.s` | iterative Fibonacci into a DMEM array, checksum + copy pass | 658 | fib(30) = 832040 in the destination register; zero differing trace lines; identical register file |
 | `bsort.s` | bubble sort of 16 words including negative values | 1366 | sorted array in DMEM; zero differing trace lines; identical register file |
 | `bloop.s` | branch-heavy loop exercising every branch condition repeatedly | 2878 | zero differing trace lines; identical register file |
+| `bpred.s` | branch-prediction demonstration: nested counted loops, bit-count, linear search, triangular sum; every back-edge a conditional branch, 1675 dynamic conditional branches, 86 % taken | 5877 | zero differing trace lines; identical register file (x28–x31 checksums) |
 | `irq_demo.s` | interrupt bonus demonstration, two external interrupts | 633 | correct `mepc`/`mcause`/ISR side effects (section 8.2); zero differing trace lines; identical register file |
 
 A "differing trace line" is any line where the RTL's WB-stage commit trace and
@@ -1120,8 +1520,9 @@ rather than invoking `run.sh` once per program by hand.
 
 ### 10.10 Results summary
 
-*Measured on commit `28768aa` (step 5). Rows marked TBD are re-measured in the
-final regression after the bonus features.*
+*Measured by the orchestrator on the final RTL (BHT + interrupt), every suite
+re-run independently of the implementing engineer. Program suites were run at
+all four `FORWARDING` × `BHT_ENABLE` combinations unless noted.*
 
 | Suite | Programs / vectors | PASS at `FORWARDING=1` | PASS at `FORWARDING=0` |
 |---|---|---|---|
@@ -1134,17 +1535,173 @@ final regression after the bonus features.*
 | `tb_imem` | 10 vectors | PASS | — |
 | `tb_pc` | 12 vectors | PASS | — |
 | `tb_perf_counters` | 19 vectors | PASS | — |
-| `asm/insn/*` | 46 programs | 46/46 | TBD (final regression) |
-| `asm/hazard/*` | 9 programs | 9/9 | 9/9 |
-| `asm/prog/*` | 4 programs | 3/3 core (irq_demo after §9) | 3/3 core |
-| `tb/bringup/*` | 7 programs | 7/7 | TBD (final regression) |
+| `tb_bht` | 2600 checks | PASS | — |
+| `tb_irq` | 21 assertions | PASS | PASS |
+| `asm/insn/*` | 46 programs | 46/46 (BHT on and off) | 46/46 |
+| `asm/hazard/*` | 9 programs | 9/9 (BHT on and off) | 9/9 (BHT on and off) |
+| `asm/prog/*` | 5 programs (irq at cycles 200, 500) | 5/5 (BHT on and off) | 5/5 (BHT on and off) |
+| `tb/bringup/*` | 7 programs | 7/7 (BHT on and off) | 7/7 |
+| `asm/smoke.s` | 1 program, all 46 encodings | PASS | PASS |
 | `tools/test_tools.py` | 4323 checks | PASS (tool-level, not RTL) | — |
 
 ---
 
 ## 11. Performance
 
-<!-- TODO(step 8): cycle counts and CPI for the three benchmark programs with
-forwarding on and off, load-use stall / flush / mispredict counter readings,
-BHT accuracy, and the Vivado synthesis results (fmax, LUT/FF/BRAM utilisation
-for the chosen 7-series part). -->
+All numbers below are measured in xsim with a 10 ns clock; cycles are counted
+from reset release to `done`, and CPI = cycles / retired instructions.
+`irq_demo` is run with the interrupt asserted at cycles 200 and 500.
+
+### 11.1 Cycle costs per event
+
+| Event | Cost |
+|---|---|
+| Load-use stall | 1 cycle |
+| `jal` | 1 bubble |
+| Taken conditional branch, prediction off (static not-taken) | 2 bubbles |
+| `jalr` | 2 bubbles |
+| `ecall` / external interrupt / `mret` | 2 bubbles |
+| BHT: predicted-taken, correct | 1 bubble |
+| BHT: predicted-not-taken, correct | 0 bubbles |
+| BHT: mispredict, either direction | 2 bubbles |
+| `FORWARDING = 0`: RAW against an EX producer | 2 stall cycles |
+| `FORWARDING = 0`: RAW against a MEM producer | 1 stall cycle |
+| `FORWARDING = 0`: RAW against a WB producer | 0 — served by the register-file WB→ID bypass |
+
+### 11.2 Forwarding on vs. off
+
+BHT off (the base machine) throughout this table — the course's "show the
+performance of your CPU" comparison:
+
+| Program | Insns | Cycles, fwd=1 | CPI | `lu_stalls` | Cycles, fwd=0 | CPI | Stalls | Speedup |
+|---|---|---|---|---|---|---|---|---|
+| `fib` | 658 | 900 | 1.368 | 62 | 1489 | 2.263 | 651 | 1.65× |
+| `bsort` | 1366 | 1880 | 1.376 | 136 | 2601 | 1.904 | 857 | 1.38× |
+| `bloop` | 2878 | 4019 | 1.396 | 0 | 4913 | 1.707 | 894 | 1.22× |
+| **total (3)** | 4902 | 6799 | 1.387 | 198 | 9003 | 1.837 | 2402 | 1.32× |
+
+The same comparison over the full suites: the hazard suite (9 programs) is
+CPI 1.429 (fwd=1) vs. 2.044 (fwd=0); the per-instruction suite (46 programs)
+is 1.269 vs. 1.369. Ideal CPI is 1.0 in both cases; the residual at `fwd=1` is
+entirely control-flow flushes (2 bubbles per taken branch/`jalr`, 1 per `jal`)
+plus load-use stalls — there is no other source of a stall or a bubble in this
+design.
+
+`fib` benefits the most from forwarding (1.65×) because its inner loop is a
+tight dependent chain — each iteration's addition consumes the previous
+iteration's result almost immediately, so every one of those RAW hazards is a
+stall at `fwd=0` and free at `fwd=1`. `bloop` benefits the least (1.22×)
+despite having the most instructions, for two reasons that compound: its
+`lu_stalls` count is **zero even at `fwd=1`** — its loop bodies compute
+independent quantities, so it was never paying the one hazard forwarding
+actually removes — and its `fwd=0` penalty (894 stall cycles) is therefore
+pure ordinary-RAW stall, the cost forwarding pays for on every other program
+for free. `bloop` shows what forwarding is *for* in the negative: a program
+with no producer-consumer adjacency has nothing for the bypass network to
+save.
+
+### 11.3 Branch prediction (`FORWARDING = 1`)
+
+| Program | Cond. branches | Static-NT acc. | Cycles, BHT off | BHT misses | BHT acc. | Cycles, BHT on | Δ cycles |
+|---|---|---|---|---|---|---|---|
+| `fib` | 91 | 3.3 % | 900 | 6 | 93.4 % | 821 | −79 (−8.8 %) |
+| `bsort` | 288 | 70.1 % | 1880 | 71 | 75.3 % | 1890 | +10 (+0.5 %) |
+| `bloop` | 891 | 72.4 % | 4019 | 446 | 49.9 % | 4419 | +400 (+10.0 %) |
+| `bpred` | 1675 | 14.5 % | 8921 | 76 | 95.5 % | 7625 | −1296 (−14.5 %) |
+| `irq_demo` | 201 | 99.5 % | 849 | 1 | 99.5 % | 849 | 0 |
+
+`bpred` (5877 instructions, all loop back-edges conditional, 86 % of dynamic
+branches taken) is the program the predictor is *for*: 14.5 % static-not-taken
+accuracy means almost every one of those back-edges would cost 2 bubbles under
+the base machine, and the BHT converts nearly all of them into 1-bubble
+correctly-predicted-taken redirects.
+
+`bloop` is the counter-example, and it is adversarial by construction: its
+inner `beq` tests `k & 1` and therefore alternates taken/not-taken on every
+iteration — the one pattern a 2-bit saturating counter cannot learn, so it
+mispredicts that branch 100 % of the time — and its three loop back-edges are
+all `j` (`jal`), giving the predictor nothing to win on at all. The
+arithmetic closes exactly: 446 misses × 2 bubbles = 892 penalty cycles under
+the BHT, versus 246 taken branches × 2 bubbles = 492 penalty cycles under
+static not-taken, a difference of 400 cycles — matching the measured
+4419 − 4019 = 400 exactly.
+
+BHT off reproduces the base machine bit-for-bit: the cycle counts in this
+table's "BHT off" column are identical to the `fwd=1` column of section 11.2,
+because `BHT_ENABLE = 0` forces every prediction to not-taken and updates no
+counter.
+
+### 11.4 Interrupt demonstration
+
+From the simulation log (`irq_demo`, interrupts asserted at cycles 200 and 500):
+
+```
+IRQ_TRAP    cycle=201  squashed_pc=0000003c  mtvec=0000004c  mie_before=1  mpie_before=0
+IRQ_ENTERED mepc=0000003c mcause=8000000b    mie_after=0     mpie_after=1
+IRQ_TAKEN   retire_index=153 mepc=0000003c mcause=8000000b mtvec=0000004c
+MRET        cycle=211  pc=00000068 -> mepc=0000003c  mie_before=0 mpie_before=1
+MRET_DONE   mie_after=1 mpie_after=1
+IRQ_TRAP    cycle=502  squashed_pc=0000003c ... mie_before=1 mpie_before=1
+IRQ_TAKEN   retire_index=377
+IRQ_SUMMARY taken=2 mepc=0000003c mcause=8000000b mtvec=0000004c mie=1 mpie=1
+```
+
+Re-running the golden ISS with `--irq-after 153 --irq-after 377` (the retire
+indices measured from the RTL log itself, per the alignment procedure of
+section 9.2) produces **0 differing trace lines over 633**.
+
+An interrupt raised while `MIE = 0` — i.e. while the ISR from the first
+interrupt is still running — is held rather than dropped: it is taken 3 cycles
+after the pending `mret` restores `MIE`. An interrupt raised while `MIE` was
+never set at all (running `fib`, `bsort` or `bloop`, none of which touch the
+CSRs) has no effect whatsoever — `taken = 0`, `mcause` stays at its reset
+value, and the cycle count is identical to the same program run with no
+interrupt asserted. Final architectural state: `x10 = 200` (the main loop's
+counter) and `x11 = 2` (the ISR's visit counter).
+
+### 11.5 Synthesis (Vivado 2026.1, xc7a35tcpg236-1, out-of-context, 100 MHz constraint, post place-and-route)
+
+| Design | LUT | FF | BRAM | LUT as memory | WNS | fmax |
+|---|---|---|---|---|---|---|
+| Base machine (forwarding, no bonuses) | 1440 | 734 | 2 | — | −2.75 ns | ≈ 78 MHz |
+| Full (BHT + interrupt) | 2173 | 960 | 1 | 556 | −1.39 ns | ≈ 88 MHz |
+
+fmax = 1 / (10 ns − WNS).
+
+**Out-of-context.** The core's ports include roughly 360 trace and
+performance-counter bits, which exceed the 106 I/O pins the `cpg236` package
+offers, so synthesis has to run without I/O buffers (out-of-context). That is
+also the methodologically correct way to characterise a core that is not
+itself pinned out to a board — the timing and utilisation numbers describe the
+core's internal logic, not a particular top-level pinout.
+
+**Memory inference.** IMEM maps to one `RAMB36E1` in both designs (a ROM, initialised from the assembled hex image). DMEM maps to a second `RAMB36E1` with byte-write lanes in the base machine, but in the full design Vivado chose **distributed LUT RAM** for it instead (`Synth 8-5584: implemented as distributed LUT RAM ... the timing constraints suggest that the chosen mapping will yield better timing results`), which is why the block-RAM count drops from 2 to 1 while "LUT as memory" rises to 556 (about 512 LUTs for the 1024×32 DMEM plus the register file). That choice removes the block-RAM clock-to-output delay from the load path and is the main reason the full design closes timing 1.4 ns better than the base machine despite being larger. The register file infers as distributed RAM (`RAM32M`) in both; the 64×2-bit BHT is flip-flops.
+
+**Critical path, full design (10.74 ns, 15 logic levels, 75 % routing):** the
+`EX/MEM` destination-register register (`rd_addr_q_reg`) through the
+forwarding/hazard compare logic and into a register-file read address — a
+match-bit comparison feeding the register file's own address decode, which is
+also the deepest path in the design because it fans out into the distributed
+RAM's address inputs. **Critical path, base machine** (12.1 ns, 67 % routing):
+DMEM's block-RAM read, through the byte-lane extension logic, through the
+write-back mux, into a forwarding mux — the load-to-use path is the base
+machine's own bottleneck, and it is a fundamentally different (and longer)
+path than the full design's, because the full design's forwarding compare
+logic wins the race once BHT and interrupt logic add enough LUT depth
+elsewhere to change synthesis's optimisation choices.
+
+**The 100 MHz target is not met** at either configuration (WNS is negative in
+both rows). Two standard fixes are named as future work rather than attempted
+under the feature freeze:
+
+1. **Register the DMEM output lane-extension into WB** — move the byte-lane
+   selection and sign/zero extension currently combinational in MEM so it
+   happens after the MEM/WB register instead of before it, shortening the base
+   machine's critical path by one combinational stage.
+2. **Pipeline the forwarding compare** by precomputing the `rs == rd` match
+   bits in ID (where the register addresses are already available a cycle
+   earlier) instead of comparing them combinationally in EX, shortening the
+   full design's critical path.
+
+Neither is implemented; both are within the datapath's existing structure
+(section 5) and would not change any instruction's architectural behaviour.

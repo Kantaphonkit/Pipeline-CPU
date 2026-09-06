@@ -2,26 +2,31 @@
 //=============================================================================
 // cpu_top.v -- RV32I 5-stage in-order pipeline (IF -> ID -> EX -> MEM -> WB).
 //
-// The complete datapath, PC-select mux, CSR/trap/mret path, hazard logic and
-// commit-trace/perf ports are wired.  forward_unit.v supplies the three EX
-// operand bypasses, hazard_unit.v the load-use interlock (or, with
-// FORWARDING=0, the stall-on-any-RAW rule used for the CPI comparison) and the
-// flush signals for every control-flow redirect.
+// The complete datapath, PC-select mux, CSR/trap/mret path, hazard logic,
+// external-interrupt path, branch predictor and commit-trace/perf ports are
+// wired.  forward_unit.v supplies the three EX operand bypasses,
+// hazard_unit.v the load-use interlock (or, with FORWARDING=0, the
+// stall-on-any-RAW rule used for the CPI comparison) and the flush signals for
+// every control-flow redirect, and bht.v predicts conditional-branch
+// direction.
 //
 // Stage summary
 //   IF   pc.v + PC-select mux + imem.v (synchronous read; the instruction word
-//        appears in ID).  if_id.v carries pc and valid alongside it.
+//        appears in ID) + bht.v lookup.  if_id.v carries pc, valid and the
+//        BHT counter state alongside it.
 //   ID   control.v / alu_ctrl.v / imm_gen.v decode, regfile read (with the
-//        WB->ID internal bypass), jal target and redirect.
-//   EX   forwarding muxes, alu.v, branch_unit.v, branch/jalr resolution,
-//        csr.v read-modify-write, ecall trap entry and mret redirect.
+//        WB->ID internal bypass), jal target and redirect, and the
+//        BHT-predicted-taken branch redirect.
+//   EX   forwarding muxes, alu.v, branch_unit.v, branch/jalr resolution and
+//        BHT update, csr.v read-modify-write, ecall / external-interrupt trap
+//        entry and mret redirect.
 //   MEM  dmem.v (synchronous write / synchronous read).
 //   WB   write-back mux (ALU|PC+4|CSR result vs. load data) -> regfile,
 //        commit-trace port, retire pulse for the performance counters.
 //
 // PC-select priority (highest first)
-//   reset -> trap (EX, mtvec) -> mret (EX, mepc) -> taken branch / jalr (EX)
-//         -> jal (ID) -> BHT prediction (IF, step 7) -> PC+4
+//   reset -> trap (EX, mtvec) -> mret (EX, mepc) -> mispredicted branch / jalr
+//         (EX) -> jal (ID) -> BHT-predicted-taken branch (ID) -> PC+4
 // A redirect overrides a stall: the instruction that raised the stall is being
 // killed anyway, so `fetch_en` uses (redirect | ~stall) and every pipeline
 // register gives flush priority over stall.
@@ -85,7 +90,8 @@ module cpu_top #(
 
     localparam [31:0] NOP_INST = 32'h00000013;   // addi x0, x0, 0
 
-    localparam [31:0] CAUSE_ECALL_M = 32'd11;    // ecall from machine mode
+    localparam [31:0] CAUSE_ECALL_M     = 32'd11;          // ecall from M-mode
+    localparam [31:0] CAUSE_MACHINE_EXT = 32'h8000_000B;  // external interrupt
 
     //=========================================================================
     // forward declarations (Verilog-2001 has no implicit nets for these)
@@ -96,8 +102,15 @@ module cpu_top #(
     wire [31:0] wb_data;
     wire [31:0] mtvec_val, mepc_val;
     wire [31:0] dmem_rdata, dmem_wmask_data;
-    wire        trap_taken, mret_taken, br_taken, jalr_taken, jal_taken;
+    wire        trap_taken, mret_taken, br_redirect, jalr_taken, jal_taken;
+    wire        irq_taken, bht_taken;
     wire        ebreak_pending;
+    wire        branch_cond;
+    wire [31:0] trap_cause;
+    wire [1:0]  bht_pred_state_if;
+    wire        bht_pred_taken_if;   // == bht_pred_state_if[1]; observation only
+                                     // (ID reads the state carried in IF/ID)
+    wire [31:0] ex_pc;
 
     //=========================================================================
     // IF stage
@@ -124,21 +137,40 @@ module cpu_top #(
         .inst (if_inst)
     );
 
-    // IF/ID: pc + valid.  The instruction word itself is held in imem's own
-    // output register (see if_id.v header), which is clocked by the same
-    // `fetch_en`, so the two halves stay in step.
+    // Branch history table: looked up in IF with the same PC the instruction
+    // memory is reading, so the counter state is available at the IF/ID
+    // boundary and travels with the instruction.  Updated from EX with the
+    // resolved outcome.
+    wire        bht_update_en;
+    bht #(.ENABLE(BHT_ENABLE)) u_bht (
+        .clk          (clk),
+        .rst          (rst),
+        .lookup_pc    (pc_q),
+        .pred_taken   (bht_pred_taken_if),
+        .pred_state   (bht_pred_state_if),
+        .update_en    (bht_update_en),
+        .update_pc    (ex_pc),
+        .update_taken (branch_cond)
+    );
+
+    // IF/ID: pc + valid + the BHT counter state.  The instruction word itself
+    // is held in imem's own output register (see if_id.v header), which is
+    // clocked by the same `fetch_en`, so the halves stay in step.
     wire [31:0] if_id_pc;
     wire        if_id_valid;
+    wire [1:0]  if_id_pred_state;
 
     if_id u_if_id (
-        .clk     (clk),
-        .rst     (rst),
-        .stall   (~fetch_en),
-        .flush   (flush_if & ~halt),
-        .pc_d    (pc_q),
-        .valid_d (1'b1),
-        .pc_q    (if_id_pc),
-        .valid_q (if_id_valid)
+        .clk          (clk),
+        .rst          (rst),
+        .stall        (~fetch_en),
+        .flush        (flush_if & ~halt),
+        .pc_d         (pc_q),
+        .valid_d      (1'b1),
+        .pred_state_d (bht_pred_state_if),
+        .pc_q         (if_id_pc),
+        .valid_q      (if_id_valid),
+        .pred_state_q (if_id_pred_state)
     );
 
     //=========================================================================
@@ -233,25 +265,42 @@ module cpu_top #(
     wire id_uses_rs2 = (id_opcode == OP_R)      || (id_opcode == OP_STORE)  ||
                        (id_opcode == OP_BRANCH);
 
-    // jal resolves here: target = PC + J-immediate (1-bubble redirect).
-    // Suppressed inside an ebreak's shadow: that jal is being flushed anyway,
-    // so letting it move the PC would only add a phantom flush event to the
-    // performance counters.
-    wire [31:0] id_jal_target = if_id_pc + id_imm;
-    assign jal_taken   = if_id_valid & id_jal & ~ebreak_pending;
-    assign redirect_id = jal_taken;
+    // ---- ID-stage redirects: jal, and a BHT-predicted-taken branch --------
+    //
+    // Both use the same adder: for a `jal` the decoder selected the J
+    // immediate, for a conditional branch the B immediate, and both targets
+    // are PC + that immediate.  Both cost a single bubble.
+    //
+    // Both are gated with `~stall`.  An ID redirect forces the fetch enable
+    // high, so IF/ID reloads and is then cleared by `flush_if`; if the ID
+    // instruction were simultaneously stalled it would also be bubbled out of
+    // ID/EX and would exist nowhere -- its register write silently lost.  The
+    // rule is "an ID redirect only fires in the cycle the ID instruction
+    // actually advances".  A stalled jal or predicted branch simply redirects
+    // one cycle later, which costs a cycle and loses nothing.
+    //
+    // Both are also suppressed inside an ebreak's shadow: the instruction is
+    // being flushed anyway, so letting it move the PC would only add a phantom
+    // flush event to the performance counters.
+    wire [31:0] id_redirect_target = if_id_pc + id_imm;
+
+    wire id_pred_taken = if_id_valid & id_branch & if_id_pred_state[1];
+
+    assign jal_taken   = if_id_valid & id_jal & ~stall & ~ebreak_pending;
+    assign bht_taken   = id_pred_taken        & ~stall & ~ebreak_pending;
+    assign redirect_id = jal_taken | bht_taken;
 
     //=========================================================================
     // ID/EX
     //=========================================================================
     wire        ex_valid, ex_illegal;
-    wire [31:0] ex_pc, ex_inst;
+    wire [31:0] ex_inst;
     wire [4:0]  ex_rs1_addr, ex_rs2_addr, ex_rd_addr;
     wire [31:0] ex_rs1_val, ex_rs2_val, ex_imm;
     wire [3:0]  ex_alu_op;
     wire        ex_alu_src_a, ex_alu_src_b;
     wire [2:0]  ex_funct3;
-    wire        ex_branch, ex_jalr;
+    wire        ex_branch, ex_jalr, ex_pred_taken;
     wire        ex_mem_re, ex_mem_we;
     wire        ex_reg_we;
     wire [1:0]  ex_wb_sel;
@@ -281,6 +330,7 @@ module cpu_top #(
         .funct3_d    (id_funct3),
         .branch_d    (id_branch),
         .jalr_d      (id_jalr),
+        .pred_taken_d(id_pred_taken),
         .mem_re_d    (id_mem_re),
         .mem_we_d    (id_mem_we),
         .reg_we_d    (id_reg_we),
@@ -309,6 +359,7 @@ module cpu_top #(
         .funct3_q    (ex_funct3),
         .branch_q    (ex_branch),
         .jalr_q      (ex_jalr),
+        .pred_taken_q(ex_pred_taken),
         .mem_re_q    (ex_mem_re),
         .mem_we_q    (ex_mem_we),
         .reg_we_q    (ex_reg_we),
@@ -381,7 +432,6 @@ module cpu_top #(
     );
 
     // Branch condition uses the forwarded register values, not the ALU.
-    wire branch_cond;
     branch_unit u_branch_unit (
         .rs1    (ex_a_val),
         .rs2    (ex_b_val),
@@ -405,25 +455,56 @@ module cpu_top #(
         .csr_rdata   (csr_rdata),
         .trap        (trap_taken & ~halt),
         .trap_pc     (ex_pc),
-        .trap_cause  (CAUSE_ECALL_M),
-        .mret        (mret_taken & ~halt),
+        .trap_cause  (trap_cause),
+        .mret        (mret_taken & ~trap_taken & ~halt),
         .mtvec_o     (mtvec_val),
         .mepc_o      (mepc_val),
         .irq         (irq),
         .irq_pending (csr_irq_pending)
     );
 
+    // ---- traps: external interrupt and ecall ------------------------------
+    //
+    // Both attach to the instruction in EX, which is squashed rather than
+    // retired, with mepc = its PC.  An external interrupt is level-sensitive
+    // and qualified inside csr.v by mstatus.MIE and mie.MEIE, so a program
+    // that has not enabled interrupts is completely unaffected by `irq` --
+    // no trap, no mcause change, no cycle cost.
+    //
+    // The interrupt is taken only when the EX slot holds a real instruction:
+    // mepc must be a genuine PC, never a bubble's zero.  EX is never stalled
+    // in this design (the interlock holds PC and IF/ID and bubbles ID/EX), so
+    // `ex_valid` is the whole condition.  It is also suppressed inside an
+    // ebreak's shadow, where the machine is already draining to a halt.
+    //
+    // The interrupt OUTRANKS an ecall occupying the same EX slot: mepc points
+    // at the ecall, which re-executes after the handler returns.  That matches
+    // the reference model, which samples irq at the instruction boundary
+    // before decoding, and it is the standard RISC-V ordering.
+    assign irq_taken  = ex_valid & csr_irq_pending & ~ebreak_pending;
+    assign trap_taken = irq_taken | (ex_valid & ex_ecall);
+
+    assign trap_cause = irq_taken ? CAUSE_MACHINE_EXT : CAUSE_ECALL_M;
+
     // ---- control-flow resolution in EX ------------------------------------
-    // TODO(step 7): trap_taken = ex_valid & (ex_ecall | csr_irq_pending), with
-    // trap_cause = 32'h8000000B and the interrupted instruction squashed the
-    // same way ecall is squashed here.
-    assign trap_taken = ex_valid & ex_ecall;
     assign mret_taken = ex_valid & ex_mret;
-    assign br_taken   = ex_valid & ex_branch & branch_cond;
     assign jalr_taken = ex_valid & ex_jalr;
 
-    assign redirect_ex = trap_taken | mret_taken | br_taken | jalr_taken;
+    // A conditional branch only redirects when the prediction was WRONG.  With
+    // BHT_ENABLE=0 the carried prediction is always 0, so this degenerates to
+    // "redirect whenever the branch is taken" -- the static not-taken machine,
+    // cycle for cycle.
+    wire        ex_branch_valid = ex_valid & ex_branch & ~trap_taken;
+    assign      br_redirect     = ex_branch_valid & (ex_pred_taken != branch_cond);
+
+    assign redirect_ex = trap_taken | mret_taken | br_redirect | jalr_taken;
     assign redirect    = redirect_ex | redirect_id;
+
+    // BHT update: the resolved outcome of every conditional branch that
+    // actually executes.  A branch squashed by a trap is excluded -- it will
+    // re-execute after the handler returns and would otherwise be trained (and
+    // counted) twice.
+    assign bht_update_en = ex_branch_valid & ~halt;
 
     // `ebreak` does not redirect the PC, but nothing behind it may commit, so
     // IF/ID and ID/EX are held empty from the moment it reaches EX until the
@@ -437,15 +518,23 @@ module cpu_top #(
     wire [31:0] ex_branch_target = ex_pc + ex_imm;              // PC + B-imm
     wire [31:0] ex_jalr_target   = alu_y & ~32'h0000_0001;      // (rs1+imm) & ~1
 
+    // Where a mispredicted branch has to go: to its target if it turned out to
+    // be taken, back to the fall-through if the BHT predicted taken and it was
+    // not.  The predicted target is not carried down from ID -- it is exactly
+    // this expression, recomputed from the pc and immediate ID/EX already
+    // holds, so carrying it would only duplicate 32 flops.
+    wire [31:0] ex_correct_target = branch_cond ? ex_branch_target
+                                                : (ex_pc + 32'd4);
+
     // ---- PC-select mux (priority order documented in the header) ----------
     always @(*) begin
-        if (trap_taken)      pc_next = mtvec_val;
-        else if (mret_taken) pc_next = mepc_val;
-        else if (br_taken)   pc_next = ex_branch_target;
-        else if (jalr_taken) pc_next = ex_jalr_target;
-        else if (jal_taken)  pc_next = id_jal_target;
-        // TODO(step 7): else if (bht_predict_taken) pc_next = bht_target;
-        else                 pc_next = pc_q + 32'd4;
+        if (trap_taken)       pc_next = mtvec_val;
+        else if (mret_taken)  pc_next = mepc_val;
+        else if (br_redirect) pc_next = ex_correct_target;
+        else if (jalr_taken)  pc_next = ex_jalr_target;
+        else if (jal_taken)   pc_next = id_redirect_target;
+        else if (bht_taken)   pc_next = id_redirect_target;
+        else                  pc_next = pc_q + 32'd4;
     end
 
     // ---- EX result select (ALU / PC+4 / CSR); see header note -------------
@@ -593,15 +682,18 @@ module cpu_top #(
     // branch, jalr, jal, ecall trap or mret -- one per event, not per killed
     // slot; the `ebreak` shadow is deliberately not counted, it is not a
     // control-flow misprediction.
-    // TODO(step 7): .bht_pred / .bht_miss from bht.v.
+    // `bht_pred` counts every conditional branch resolved in EX and `bht_miss`
+    // the mispredicted subset, at either BHT_ENABLE setting -- with the
+    // predictor off, every taken branch is a "miss", which is exactly the
+    // static not-taken baseline the comparison needs.
     perf_counters u_perf (
         .clk        (clk),
         .rst        (rst),
         .retire     (wb_retire),
         .lu_stall   (stall & ~halt),
         .flush      (redirect & ~halt),
-        .bht_pred   (1'b0),
-        .bht_miss   (1'b0),
+        .bht_pred   (ex_branch_valid & ~halt),
+        .bht_miss   (br_redirect     & ~halt),
         .cycles     (perf_cycles),
         .insns      (perf_insns),
         .lu_stalls  (perf_lu_stalls),
@@ -634,11 +726,5 @@ module cpu_top #(
         .flush_if    (flush_if),
         .flush_id    (flush_id)
     );
-
-    // Signals that only step 7 consumes; referenced here so elaboration keeps
-    // them and so the BHT_ENABLE parameter is not flagged as unused.
-    // verilator lint_off UNUSED
-    wire _unused_step7 = csr_irq_pending & (BHT_ENABLE != 0);
-    // verilator lint_on UNUSED
 
 endmodule

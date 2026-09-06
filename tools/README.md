@@ -19,6 +19,43 @@ table and the RTL test cannot drift apart.  Stimulus words come from
 `asm.encode`; every word's expected mnemonic (or its illegality) is confirmed by
 `iss.decode` before a vector is emitted.
 
+`run_tests.py` drives `tb/tb_program.v` over a directory of `.s` programs:
+
+```
+python tools/run_tests.py --dir asm/insn                 # trace + register check
+python tools/run_tests.py --dir asm/prog --fwd 0         # forwarding off
+python tools/run_tests.py --dir asm/prog --bht 0         # predictor off
+python tools/run_tests.py --dir asm/prog --irq-at 200,500  # external interrupts
+```
+
+**Interrupt programs are diffed through a derived-index flow, not against the
+committed `.trace` fixture.** `iss.py --irq-after N` traps at the boundary
+after N instructions have retired, and `irq_demo.trace` is generated with the
+fixed schedule `--irq-after 50 --irq-after 120`. The RTL's N is a different
+number: it depends on how many instructions happened to be in MEM and WB when
+the interrupt level arrived, which is a function of the cycle the testbench
+raises `irq`, the forwarding setting and the branch predictor. So `run_tests.py
+--irq-at` instead:
+
+1. runs the RTL with `+NOTRACE +IRQ_AT1=…` and lets `tb_program` measure the
+   index itself -- it prints `IRQ_TAKEN retire_index=<N>` when the first
+   instruction at `mtvec` retires after each trap;
+2. re-runs `iss.py` with those measured `--irq-after N` values;
+3. diffs the two traces in Python, byte for byte (line endings normalised:
+   xsim's `$fwrite` writes CRLF on Windows, `iss.py` writes LF).
+
+The register check still uses the committed `.regs` fixture, which is
+timing-independent for `irq_demo` by construction (`x10 = 200`, `x11 = 2`).
+The committed `irq_demo.trace` stays as the reference-model artefact for the
+report; nothing regenerates it.
+
+One modelling difference is deliberate: the ISS's `irq` is a one-shot pulse
+that is *dropped* if `MIE`/`MEIE` are clear at that instant, while the RTL
+input is a level the testbench *holds* until it observes the trap. They agree
+whenever an interrupt arrives with interrupts already enabled. `tb/tb_irq.v`
+covers the round trip directly, and a run with an irq scheduled inside the ISR
+demonstrates the held-level case.
+
 `asm.py` writes exactly 1024 lowercase 8-hex-digit lines (`$readmemh` fills the
 whole 4 KB array), plus `<base>.data.hex` when `.data` is non-empty.
 ISS exit codes are the testbench contract: **0** ebreak, **2** `--max-insns`
