@@ -21,6 +21,11 @@ vivado/*.hw/
 vivado/*.ip_user_files/
 vivado/*.sim/
 
+# vivado/synth.sh / synth.ps1 reports dir: keep the .txt reports (report
+# material for the midterm/final writeup), ignore Vivado's own log/journal.
+vivado/reports/*.log
+vivado/reports/*.jou
+
 # Python
 __pycache__/
 *.pyc
