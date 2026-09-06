@@ -1,2 +1,7 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# All text files: normalize to LF in repo AND check out as LF (fixtures/traces are compared byte-exact)
+* text=auto eol=lf
+*.hex text eol=lf
+*.trace text eol=lf
+*.regs text eol=lf
+*.dmem text eol=lf
+*.pdf binary
