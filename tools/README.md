@@ -7,7 +7,17 @@ python tools/asm.py asm/smoke.s -o sim/work/smoke.hex [--list] [--bin-json]
 python tools/iss.py sim/work/smoke.hex [--data X.data.hex] [--trace f]
        [--max-insns N] [--irq-after N ...] [--dump-regs] [--dump-mem LO HI]
 python tools/test_tools.py            # 4300+ self-checks, exit 0 = all pass
+python tools/gen_control_table.py     # regenerate the decode truth table + vectors
+python tools/gen_control_table.py --check   # fail if those outputs are stale
 ```
+
+`gen_control_table.py` owns the per-instruction control settings as a Python
+dict -- that dict is the single source of truth behind both `docs/DESIGN.md`
+section 3 (spliced between the `CONTROL-TABLE-BEGIN/END` markers) and
+`tb/vectors/control_vectors.hex` (consumed by `tb/tb_control.v`), so the report
+table and the RTL test cannot drift apart.  Stimulus words come from
+`asm.encode`; every word's expected mnemonic (or its illegality) is confirmed by
+`iss.decode` before a vector is emitted.
 
 `asm.py` writes exactly 1024 lowercase 8-hex-digit lines (`$readmemh` fills the
 whole 4 KB array), plus `<base>.data.hex` when `.data` is non-empty.

@@ -318,3 +318,52 @@ module control (
 - **Trace port** (`trace_*` in §6) is registered at the WB stage: `trace_valid` = 1 for one
   cycle per retired instruction, including bubbles = 0. `trace_mem_val` for `sb`/`sh` is the
   data masked to width (`& 0xff` / `& 0xffff`).
+
+### 8.5 `pc.v`
+```verilog
+module pc (input wire clk, input wire rst, input wire en, input wire [31:0] pc_next, output reg [31:0] pc_q);
+// posedge: if (rst) pc_q <= 0; else if (en) pc_q <= pc_next;
+```
+
+### 8.6 `imem.v` — synchronous read with enable (BRAM-inferable)
+```verilog
+module imem #(parameter INIT = "asm/smoke.hex") (
+    input wire clk, input wire en, input wire [31:0] addr, output reg [31:0] inst);
+// reg [31:0] mem [0:1023]; initial $readmemh(INIT, mem);
+// always @(posedge clk) if (en) inst <= mem[addr[11:2]];
+```
+`en` = ~stall: when the pipeline stalls, IF/ID must hold, and because the instruction word
+lives in imem's output register, holding PC alone is not enough (PC has already advanced).
+cpu_top keeps `if_id_pc` and `if_id_valid` alongside; flush clears `if_id_valid` so ID sees a
+NOP regardless of `inst`.
+
+### 8.7 `dmem.v` — synchronous, byte lanes handled inside
+```verilog
+module dmem #(parameter INIT = "") (
+    input  wire        clk,
+    input  wire        we,            // store in MEM stage
+    input  wire        re,            // load in MEM stage
+    input  wire [31:0] addr,          // effective byte address
+    input  wire [2:0]  funct3,        // 000 b, 001 h, 010 w, 100 bu, 101 hu
+    input  wire [31:0] wdata,         // rs2 value (already forwarded); dmem masks/shifts by lane
+    output wire [31:0] rdata);        // load result, extended, valid the cycle after `re` (WB stage)
+```
+- `reg [31:0] mem [0:1023]`; `initial` zero-fills, then `$readmemh(INIT, mem)` only when
+  `INIT != ""` (must work in xsim for both cases — test both).
+- Write: `mem[addr[11:2]]` byte-lane update from `addr[1:0]` and funct3[1:0] (sb: 1 byte,
+  sh: 2 bytes, sw: 4). Little-endian: byte 0 = bits [7:0].
+- Read: on posedge with `re`, register `mem[addr[11:2]]`, `addr[1:0]`, `funct3`; `rdata` is the
+  combinational lane-select + sign/zero extension of those registered values.
+- Also expose `output wire [31:0] wmask_data` — the store data masked to width and NOT shifted
+  (sb: `{24'b0, wdata[7:0]}`, sh: `{16'b0, wdata[15:0]}`, sw: wdata) for the trace port.
+
+### 8.8 `perf_counters.v`
+```verilog
+module perf_counters (input wire clk, input wire rst,
+    input wire retire, input wire lu_stall, input wire flush, input wire bht_pred, input wire bht_miss,
+    output reg [31:0] cycles, output reg [31:0] insns, output reg [31:0] lu_stalls,
+    output reg [31:0] flushes, output reg [31:0] bht_preds, output reg [31:0] bht_misses);
+```
+All counters clear on rst; `cycles` increments every non-reset cycle; the others increment
+when their input is 1. Counting stops when `done` (cpu_top gates `retire` etc. — perf module
+stays dumb).
