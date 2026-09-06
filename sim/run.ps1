@@ -141,8 +141,22 @@ try {
         exit 1
     }
 
+    # -generic_top NAME=VALUE and -testplusarg NAME=VALUE cannot be passed on
+    # the command line: the xelab/xsim launchers are .bat wrappers, and cmd.exe
+    # splits an unquoted NAME=VALUE token on the '=' (the tool then reports
+    # "Expected a switch but found ..."), while quoting it turns the '=' into a
+    # space. Both tools accept "-f <file>" ("take command line options from a
+    # file"), which is immune to cmd.exe tokenisation, so the options go
+    # through a generated argument file instead.
     $xelabArgs = @("-L", "work", "--snapshot", "${TbName}_snap", $TbName, "--timescale", "1ns/1ps")
-    foreach ($g in $Generics) { $xelabArgs += @("-generic_top", $g) }
+    if ($Generics.Count -gt 0) {
+        $xelabArgFile = Join-Path $Work "xelab_args.f"
+        $lines = $Generics | ForEach-Object { '-generic_top "' + $_ + '"' }
+        # Must be BOM-less: xelab's -f parser treats a UTF-8 BOM as part of the
+        # first token (Set-Content -Encoding utf8 writes one in PS 5.1).
+        [System.IO.File]::WriteAllLines($xelabArgFile, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
+        $xelabArgs += @("-f", "xelab_args.f")
+    }
     if ($Wave) { $xelabArgs += @("--debug", "typical") }
 
     Write-LogLine "== xelab =="
@@ -154,10 +168,16 @@ try {
     }
 
     $xsimArgs = @("${TbName}_snap", "--runall")
-    foreach ($p in $PlusArgs) {
-        $pv = $p
-        if ($pv.StartsWith("+")) { $pv = $pv.Substring(1) }
-        $xsimArgs += @("-testplusarg", $pv)
+    if ($PlusArgs.Count -gt 0) {
+        $xsimArgFile = Join-Path $Work "xsim_args.f"
+        $lines = $PlusArgs | ForEach-Object {
+            $pv = $_
+            if ($pv.StartsWith("+")) { $pv = $pv.Substring(1) }
+            '-testplusarg "' + $pv + '"'
+        }
+        # BOM-less, for the same reason as the xelab argument file above.
+        [System.IO.File]::WriteAllLines($xsimArgFile, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
+        $xsimArgs += @("-f", "xsim_args.f")
     }
     if ($Wave) { $xsimArgs += @("-wdb", "$TbName.wdb") }
 
@@ -168,6 +188,13 @@ try {
     $wdbPath = Join-Path $Work "$TbName.wdb"
     if ($Wave -and (Test-Path $wdbPath)) {
         Copy-Item -Force $wdbPath (Join-Path $RepoWork "$TbName.wdb")
+    }
+
+    # Copy back any commit-trace files the testbench wrote into the shadow work
+    # dir (tb_program writes ./rtl.trace) so they are inspectable from the repo.
+    $traceFiles = Get-ChildItem -Path $Work -Filter "*.trace" -ErrorAction SilentlyContinue
+    foreach ($tf in $traceFiles) {
+        Copy-Item -Force $tf.FullName (Join-Path $RepoWork $tf.Name)
     }
 
     if ($xsimRc -ne 0) {

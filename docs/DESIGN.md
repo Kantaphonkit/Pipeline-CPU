@@ -288,9 +288,204 @@ needs no error state of its own.
 
 ## 5. Datapath
 
-<!-- TODO(step 4): stage-by-stage datapath description, pipeline register field
-lists (IF/ID, ID/EX, EX/MEM, MEM/WB), PC-select mux and its priority order,
-block diagram. -->
+`rtl/cpu_top.v` wires the five stages together. Every boundary between two
+stages is an explicit pipeline-register module (`if_id.v`, `id_ex.v`,
+`ex_mem.v`, `mem_wb.v`), each with the same four control inputs — `clk`, `rst`,
+`stall` (hold the current contents) and `flush` (overwrite with a bubble) — so
+the interlock and flush logic of section 6 plugs in without touching the
+datapath.
+
+### 5.1 Block diagram
+
+```
+        IF              |        ID             |        EX            |   MEM      |     WB
+========================|=======================|======================|============|=============
+                        |                       |                      |            |
+  +----------------+    |   control.v           |  +--------+          |            |
+  |  PC-select mux |    |   alu_ctrl.v          |  | fwd A  |--+       |            |
+  |  (5.4)         |    |   imm_gen.v           |  +--------+  |       |            |
+  +-------+--------+    |                       |  +--------+  +->+---------+       |
+          |             |   regfile.v read      |  | fwd B  |---->|  alu.v  |--+    |
+      +---v---+         |   (async, WB->ID      |  +--------+     +---------+  |    |
+      | pc.v  |----+    |    internal bypass)   |  +--------+                  |    |
+      +-------+    |    |                       |  | fwd C  |--- store data ---|--+ |
+          |        |    |   jal target          |  +--------+                  |  | |
+      +---v----+   |    |   = IF/ID.pc + immJ   |  branch_unit.v -> taken      |  | |
+      | imem.v |   |    |         |             |  csr.v  RMW / trap / mret    |  | |
+      | (sync) |   |    |         |             |  branch & jalr targets       |  | |
+      +---+----+   |    |         |             |  res = ALU | PC+4 | CSR      |  | |
+          |        |    |         |             |         |                    |  | |
+   [ IF/ID: pc, valid ] |    [  ID/EX  ]        |    [  EX/MEM  ]              |  | |
+   + imem output reg    |                       |                              |  | |
+                        |                       |                       +------v--v-+
+                        |                       |                       |  dmem.v   |
+                        |                       |                       | we/re/addr|
+                        |                       |                       |   wdata   |
+                        |                       |                       +-----+-----+
+                        |                       |                             | rdata
+                        |                       |                       [ MEM/WB ]  |
+                        |                       |                             |     |
+                        |                       |                          +--v-----v--+
+                        |                       |                          |  wb mux   |
+                        |                       |                          +-----+-----+
+                        |                       |                                |
+                        |                       |          regfile write  <------+------> trace_* ,
+                        |                       |          (x0 suppressed)              retire pulse
+          ^             |         ^             |         ^
+          |             |         |             |         |
+          +-- jal target (ID) ----+             |         |
+          +-- trap / mret / branch / jalr target (EX) ----+
+```
+
+The instruction word itself is not duplicated into `if_id.v`: `imem.v` is a
+synchronous-read memory, so its own output register *is* the instruction half
+of the IF/ID boundary. `if_id.v` carries the matching `pc` and `valid` bits and
+is clocked by the same enable, and ID substitutes a `nop` (`0x00000013`) for the
+instruction word whenever `valid` is 0. Registering the instruction a second
+time would add a wasted cycle of fetch latency.
+
+### 5.2 Stage by stage
+
+**IF** — the PC register (`pc.v`) drives `imem.v`, whose registered output is
+read by ID on the next cycle. The PC-select mux (section 5.4) chooses the next
+PC. The fetch enable is `~halt & (redirect | ~stall)`: a redirect always
+re-fetches, even during a stall, because the stalling instruction is being
+killed anyway.
+
+**ID** — `control.v` produces the full control word from the instruction,
+`alu_ctrl.v` reduces `alu_class`/`funct3`/`inst[30]` to a 4-bit ALU opcode, and
+`imm_gen.v` builds the immediate. The register file is read combinationally
+with the mandatory WB→ID internal bypass, so an instruction can read a register
+that the instruction three slots ahead of it is writing this very cycle. `jal`
+resolves here: its target is `PC + immJ`, known without any register value, so
+it costs a single shadow slot instead of two.
+
+**EX** — three forwarding muxes select the ALU A operand, the ALU B operand and
+the store data. `alu.v` computes the result; `branch_unit.v` evaluates the
+branch condition from the *forwarded* register values rather than from the ALU,
+keeping the compare off the ALU path. Conditional branches (`PC + immB`) and
+`jalr` (`(rs1 + immI) & ~1`) resolve here, as do `ecall` (trap entry) and `mret`.
+`csr.v` performs its read-modify-write in this same cycle.
+
+The ALU / `PC+4` / CSR choice is also made in EX and travels down as
+`EX/MEM.res`. That placement is deliberate: the EX/MEM forwarding source must be
+the value the instruction will actually write back, which for `jal`/`jalr` is
+the link address and for `csrr*` is the old CSR value — forwarding the raw ALU
+output would forward a jump target instead.
+
+**MEM** — `dmem.v` performs the byte-lane write or the synchronous read.
+`EX/MEM.res` is the effective byte address and `EX/MEM.store_data` the forwarded
+`rs2`. The load word is registered inside `dmem.v` and lane-selected and
+extended combinationally, so the load result is valid during WB.
+
+**WB** — the write-back mux is a two-way choice between `MEM/WB.res` and the
+load data, because the other three sources were already resolved in EX. The
+result goes to the register-file write port (suppressed for `x0`), to the
+commit-trace port, and to the `retire` pulse that increments the instruction
+counter.
+
+### 5.3 Pipeline-register fields
+
+Every register's bubble encoding is *all fields zero*, which is a genuine NOP
+control word (`reg_we = mem_re = mem_we = csr_we = branch = jalr = mret =
+ecall = ebreak = 0`) with `valid = 0`, so a flushed slot has no architectural
+effect and is neither retired nor traced. `flush` has priority over `stall` in
+all four registers.
+
+| Register | Field | Width | Purpose |
+|---|---|---|---|
+| **IF/ID** | `valid` | 1 | 0 = bubble; ID substitutes a `nop` for the instruction word |
+| | `pc` | 32 | PC of the fetched instruction (jal target base, and the future `mepc`) |
+| | *(instruction)* | 32 | held in `imem.v`'s output register, clocked by the same enable |
+| **ID/EX** | `valid` | 1 | a real instruction occupies this slot |
+| | `illegal` | 1 | decoded as illegal: executes as a NOP, never retires, never traced |
+| | `pc` | 32 | trace, `PC+4` link value, branch target base, `mepc` on a trap |
+| | `inst` | 32 | commit trace only |
+| | `rs1_addr`, `rs2_addr` | 5, 5 | forwarding comparisons |
+| | `rd_addr` | 5 | write-back destination, forwarding comparisons |
+| | `rs1_val`, `rs2_val` | 32, 32 | register-file read values (pre-forwarding) |
+| | `imm` | 32 | selected immediate (also the CSR `zimm`) |
+| | `alu_op` | 4 | ALU opcode from `alu_ctrl.v` |
+| | `alu_src_a` | 1 | 0 = rs1, 1 = PC (`auipc` only) |
+| | `alu_src_b` | 1 | 0 = rs2, 1 = immediate |
+| | `funct3` | 3 | branch condition, load/store width, CSR operation |
+| | `branch` | 1 | conditional branch: resolve in EX |
+| | `jalr` | 1 | `jalr`: resolve in EX |
+| | `mem_re`, `mem_we` | 1, 1 | MEM-stage access |
+| | `reg_we` | 1 | writes `rd` |
+| | `wb_sel` | 2 | 0 ALU, 1 MEM, 2 PC+4, 3 CSR |
+| | `csr_en`, `csr_we`, `csr_imm` | 1, 1, 1 | CSR read side / write side / `zimm` form |
+| | `csr_addr` | 12 | CSR number |
+| | `mret`, `ecall`, `ebreak` | 1, 1, 1 | system instructions |
+| **EX/MEM** | `valid`, `illegal` | 1, 1 | as above |
+| | `pc`, `inst` | 32, 32 | commit trace |
+| | `rd_addr`, `reg_we` | 5, 1 | write-back and forwarding |
+| | `wb_sel` | 2 | selects load data vs. `res` in WB |
+| | `res` | 32 | ALU result, or `PC+4`, or the old CSR value; for a store or load it is the effective byte address |
+| | `store_data` | 32 | forwarded `rs2` for `sb`/`sh`/`sw` |
+| | `funct3` | 3 | load/store width and signedness |
+| | `mem_re`, `mem_we` | 1, 1 | drives `dmem.v` |
+| | `ebreak` | 1 | sets the sticky halt when it retires |
+| **MEM/WB** | `valid`, `illegal` | 1, 1 | qualify retire and trace |
+| | `pc`, `inst` | 32, 32 | commit trace |
+| | `rd_addr`, `reg_we` | 5, 1 | register-file write port |
+| | `wb_sel` | 2 | write-back mux select |
+| | `res` | 32 | non-memory result; also the trace's store address |
+| | `mem_we` | 1 | a store retired (trace) |
+| | `mem_val` | 32 | store data masked to width, captured at MEM (trace only) |
+| | `ebreak` | 1 | sticky halt |
+
+The load data is deliberately *not* a MEM/WB field: `dmem.v` already registers
+the memory word on the MEM clock edge and presents the extended value
+combinationally during WB.
+
+### 5.4 PC-select mux
+
+| Priority | Source | Resolved in | Next PC |
+|---|---|---|---|
+| 1 | reset | — | `0x00000000` |
+| 2 | trap (`ecall`, later an external interrupt) | EX | `mtvec` |
+| 3 | `mret` | EX | `mepc` |
+| 4 | taken conditional branch | EX | `PC + immB` |
+| 5 | `jalr` | EX | `(rs1 + immI) & ~1` |
+| 6 | `jal` | ID | `PC + immJ` |
+| 7 | branch prediction (bonus) | IF | predicted target |
+| 8 | sequential | — | `PC + 4` |
+
+Ordering rules that the table encodes:
+
+- Everything resolved in EX outranks anything resolved in ID or IF, because the
+  EX instruction is older — an ID-stage `jal` that loses to an EX-stage branch
+  is itself on the wrong path and will be flushed.
+- Trap and `mret` outrank the branch/`jalr` targets so that a trapping branch
+  goes to the handler rather than to its own target.
+- A redirect overrides a stall. The stall signal normally holds the PC and the
+  IF/ID register, but the instruction that raised it is being killed by the
+  redirect, so the fetch enable is `redirect | ~stall` and `flush` beats `stall`
+  inside every pipeline register.
+
+Because branches and `jalr` resolve in EX, a taken one leaves **two** shadow
+slots (the instructions already in ID and IF); `jal`, resolved in ID, leaves
+**one**. Killing those slots is the flush logic of section 6.
+
+### 5.5 Halting, illegal instructions, and the commit trace
+
+`ebreak` is not a trap: it flows through the pipeline normally, is counted and
+traced like any other instruction, and then raises a sticky `done` flag as it
+retires. `done` freezes the whole pipeline, so nothing behind the `ebreak`
+commits and the trace ends exactly at the `ebreak` line.
+
+An illegal instruction is decoded to an all-zero control word, i.e. it executes
+as a NOP with no trap. It keeps `valid = 1` but carries an `illegal` flag, and
+both the retire pulse and the trace are qualified with `valid && !illegal`, so
+it is neither counted nor traced.
+
+The commit-trace port is driven from the MEM/WB register outputs:
+`trace_valid` is the retire pulse, `trace_rd_we` additionally requires
+`rd != 0`, `trace_mem_addr` is `MEM/WB.res` (the effective byte address of a
+store) and `trace_mem_val` is the store data masked to its width, captured from
+`dmem.v` at MEM. That is exactly the information the Python reference model
+prints, so the two traces can be diffed line by line.
 
 ---
 

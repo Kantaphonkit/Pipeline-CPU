@@ -38,7 +38,8 @@
 # the repo's sim/work/<tb>/ afterward, so nothing about the *outputs* differs
 # from a machine whose path is plain ASCII — only the intermediate xsim.dir/
 # clutter lives outside the repo instead of inside it (which is strictly
-# better than the git-ignored default).
+# better than the git-ignored default).  Any *.trace files a testbench writes
+# into that shadow dir (tb_program writes ./rtl.trace) are copied back too.
 # -----------------------------------------------------------------------------
 
 set -o pipefail
@@ -131,9 +132,20 @@ if [ "$XVLOG_RC" -ne 0 ]; then
 fi
 
 XELAB_ARGS=(-L work --snapshot "${TB}_snap" "$TB" --timescale 1ns/1ps)
-for g in "${GENERICS[@]}"; do
-    XELAB_ARGS+=(-generic_top "$g")
-done
+# -generic_top NAME=VALUE and -testplusarg NAME=VALUE cannot be passed on the
+# command line here: the xelab/xsim launchers are .bat wrappers, and cmd.exe
+# splits an unquoted NAME=VALUE token on the '=' (the tool then reports
+# "Expected a switch but found ..."), while quoting it turns the '=' into a
+# space. Both tools accept "-f <file>" ("take command line options from a
+# file"), which is immune to cmd.exe tokenisation, so the options go through
+# a generated argument file instead.
+if [ ${#GENERICS[@]} -gt 0 ]; then
+    : > xelab_args.f
+    for g in "${GENERICS[@]}"; do
+        printf -- '-generic_top "%s"\n' "$g" >> xelab_args.f
+    done
+    XELAB_ARGS+=(-f xelab_args.f)
+fi
 if [ "$WAVE" -eq 1 ]; then
     XELAB_ARGS+=(--debug typical)
 fi
@@ -148,9 +160,13 @@ if [ "$XELAB_RC" -ne 0 ]; then
 fi
 
 XSIM_ARGS=("${TB}_snap" --runall)
-for p in "${PLUSARGS[@]}"; do
-    XSIM_ARGS+=(-testplusarg "${p#+}")
-done
+if [ ${#PLUSARGS[@]} -gt 0 ]; then
+    : > xsim_args.f
+    for p in "${PLUSARGS[@]}"; do
+        printf -- '-testplusarg "%s"\n' "${p#+}" >> xsim_args.f
+    done
+    XSIM_ARGS+=(-f xsim_args.f)
+fi
 if [ "$WAVE" -eq 1 ]; then
     XSIM_ARGS+=(-wdb "${TB}.wdb")
 fi
@@ -163,6 +179,14 @@ cp -f "$LOG" "$REPO_WORK/sim.log"
 if [ "$WAVE" -eq 1 ] && [ -f "$WORK/${TB}.wdb" ]; then
     cp -f "$WORK/${TB}.wdb" "$REPO_WORK/${TB}.wdb"
 fi
+
+# Copy back any commit-trace files the testbench wrote into the shadow work dir
+# (tb_program writes ./rtl.trace) so they are inspectable from the repo.
+shopt -s nullglob
+for tracefile in "$WORK"/*.trace; do
+    cp -f "$tracefile" "$REPO_WORK/"
+done
+shopt -u nullglob
 
 if [ "$XSIM_RC" -ne 0 ]; then
     echo "FAIL: $TB (xsim exited $XSIM_RC)" | tee -a "$REPO_WORK/sim.log"
