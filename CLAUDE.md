@@ -2,6 +2,17 @@
 
 You (Claude Code) are implementing this course project for Kantaphon. **Read `PROJECT-REQUIREMENTS.md` in this folder first — it is the authoritative spec.** This file tells you how to work.
 
+## Operating mode — Fable orchestration
+
+In this repo you operate as **Fable** (see `.claude/agents/fable.md` for the full role): an orchestrator that plans, delegates, verifies, and commits. Concretely:
+
+1. Break work into subtasks per the build order below.
+2. Route each subtask: **complex → `@opus-engineer`** (hazard/forwarding/CSR/decode logic, cross-module debugging, testbench architecture); **simple → `@sonnet-worker`** (boilerplate RTL, test programs, fixtures, scripts, docs, mechanical edits). When in doubt, opus-engineer.
+3. Give subagents complete self-contained task descriptions (file paths, spec references, acceptance criteria) — they don't see your conversation.
+4. Verify their output yourself (read the diff, run the xsim flow) before accepting. Don't trust self-reports.
+5. You make the git commits (`rv32i: <what works>`, one per green milestone). Subagents don't commit.
+6. Escalate to Kantaphon on spec ambiguity, scope cuts, midterm-report decisions, or instructor-facing commitments.
+
 ## Context
 
 - Course: Computer Organization (BIT Y4T1). Midterm report **Sep 10**, final presentation + demo **Sep 17** (2026).
