@@ -491,9 +491,262 @@ prints, so the two traces can be diffed line by line.
 
 ## 6. Hazards and pipeline control
 
-<!-- TODO(step 5): forwarding unit truth table (EX/MEM priority over MEM/WB,
-x0 suppression, store-data forwarding), load-use interlock, branch/jump flush
-timing diagrams, FORWARDING=0 stall-only mode used for the CPI comparison. -->
+Two small combinational modules hold all of it. `rtl/forward_unit.v` decides
+where each EX-stage operand comes from; `rtl/hazard_unit.v` decides when the
+front of the pipe has to wait and when part of it has to be thrown away. The
+datapath of section 5 is unchanged by either: the pipeline registers already
+carry `stall` and `flush` inputs, and every comparison input these two modules
+need is already routed.
+
+### 6.1 Data hazards and the forwarding unit
+
+An instruction reads its registers in ID but the three instructions ahead of it
+have not written theirs back yet. Four distances matter, counting from the
+consumer:
+
+| Distance | Producer is in… | Covered by |
+|---|---|---|
+| 1 | EX (its result appears at the EX/MEM boundary) | EX/MEM bypass, select `2'b10` |
+| 2 | MEM (its result appears at the MEM/WB boundary) | MEM/WB bypass, select `2'b01` |
+| 3 | WB (writing the register file this cycle) | the register file's WB→ID internal bypass |
+| ≥ 4 | already retired | ordinary register read |
+
+Distance 3 is handled inside `regfile.v`, not here: the read ports return
+`wdata` whenever `we && waddr == raddr && waddr != 0`, so ID sees the value the
+WB stage is writing in the same cycle. Without that bypass a fourth forwarding
+path — or a third stall class — would be needed.
+
+Three EX operands need a select of their own, because three different consumers
+read a register in EX:
+
+| Select | Feeds | Source register |
+|---|---|---|
+| `fwd_a` | ALU operand A, `branch_unit` rs1, CSR write source | rs1 |
+| `fwd_b` | ALU operand B **and** `branch_unit` rs2 — taken before the rs2/immediate mux, because a branch compares rs2 even though the ALU sees the immediate | rs2 |
+| `fwd_c` | store data on its way to `dmem.wdata` | rs2 |
+
+`fwd_b` and `fwd_c` compute the same function; they are kept apart so the
+store-data path is visible in the datapath and can be tested on its own.
+
+**Truth table** (identical for all three selects; `rs` is that operand's source
+register, `mem_*` is the EX/MEM register, `wb_*` the MEM/WB register):
+
+| `FORWARDING` | `mem_reg_we && mem_rd != 0 && mem_rd == rs` | `wb_reg_we && wb_rd != 0 && wb_rd == rs` | select | operand value |
+|---|---|---|---|---|
+| 0 | — | — | `2'b00` | ID/EX register value |
+| 1 | yes | — | `2'b10` | EX/MEM `res` |
+| 1 | no | yes | `2'b01` | WB write data |
+| 1 | no | no | `2'b00` | ID/EX register value |
+
+Two rules are load-bearing:
+
+- **EX/MEM outranks MEM/WB.** When both older instructions write the same
+  architectural register, the one in MEM is the *newer* writer, and its value is
+  what the architecture says this instruction reads. Testing MEM/WB first would
+  resurrect the stale value. The last block of `asm/hazard/fwd_ex_ex.s` is
+  exactly that trap: `x5 = 100`, then `x5 = x5 + 1`, then a consumer that must
+  see 101 while 100 is still sitting in MEM/WB.
+- **Never forward from x0.** A producer whose `rd` is x0 wrote nothing — the
+  register file suppresses the write — so forwarding its result would make x0
+  read non-zero for exactly one instruction. The `rd != 0` term is what
+  prevents that, and it also implies `rs != 0`, so no separate consumer-side
+  test is needed. `asm/hazard/x0_hazard.s` writes x0 and immediately reads it.
+
+The EX/MEM path deliberately does **not** handle loads. `EX/MEM.res` is the ALU
+output, which for a load is the effective address rather than the loaded data.
+The interlock below guarantees a consumer never reaches EX while its producing
+load has only got as far as MEM, so select `2'b10` is never taken for a load; by
+the time the consumer does reach EX the load is in WB and `2'b01` carries real
+data.
+
+```
+  EX/MEM forward (distance 1)            MEM/WB forward (distance 2)
+
+          c1  c2  c3  c4  c5                     c1  c2  c3  c4  c5  c6
+ addi x5  IF  ID  EX  MEM WB           addi x5   IF  ID  EX  MEM WB
+ add ,x5      IF  ID  EX  MEM          nop           IF  ID  EX  MEM WB
+                  ^^^                  add ,x5           IF  ID  EX  MEM
+                  producer is in MEM                         ^^^
+                  -> fwd = 2'b10                             producer is in WB
+                                                             -> fwd = 2'b01
+```
+
+### 6.2 The load-use interlock
+
+A load's data does not exist until the end of MEM, so no bypass can serve a
+consumer one slot behind it. That consumer has to wait one cycle:
+
+```
+stall = ID/EX.valid && ID/EX.mem_re && ID/EX.rd != 0 &&
+        ( (ID reads rs1 && ID.rs1 == ID/EX.rd) ||
+          (ID reads rs2 && ID.rs2 == ID/EX.rd) )
+```
+
+`rd != 0` matters because `lw x0, 0(rs1)` writes nothing. The "ID reads rsN"
+qualifiers come from the decoder, not from the raw instruction bits: without
+them `lui`, `auipc`, `jal`, the `csrr*i` forms and `ecall` would appear to read
+whatever their immediate happens to place in the rs1/rs2 field and could raise a
+stall no real dependency justifies. That would cost cycles rather than
+correctness, but the counters exist to measure CPI, so they should not count
+hazards that are not there.
+
+One cycle is always enough — after it the load has reached WB and the MEM/WB
+bypass supplies the data:
+
+```
+                 c1   c2   c3   c4   c5   c6   c7
+ lw   x7,0(x5)   IF   ID   EX   MEM  WB
+ add  x8,x7,x0        IF   ID   ID   EX   MEM  WB
+                           ^^   ^^   ^^
+                           |    |    +- lw is in WB: MEM/WB forward (2'b01)
+                           |    +------ add re-decodes; ID/EX got a bubble
+                           +----------- hazard seen: stall raised
+ sub  ...                  IF   IF   ID   EX   MEM
+                                ^^ PC and IF/ID held, imem en = 0
+```
+
+The stall acts on three places at once: `pc.v`'s enable goes low, `imem.v`'s
+enable goes low (the instruction word lives in imem's output register, so
+holding the PC alone would not hold the instruction), the IF/ID register holds,
+and the ID/EX register is loaded with a bubble. That last part is what turns a
+stall into a bubble travelling down the back half of the pipe.
+
+`asm/hazard/load_use.s` covers every shape of it: the loaded value used as rs1,
+as rs2, as both operands at once, as a store's base address, as a store's data,
+and as a branch operand.
+
+### 6.3 Control hazards and the flush rules
+
+| Redirect | Resolved in | Flushes | Cost |
+|---|---|---|---|
+| `jal` | ID (target = PC + J-immediate, no register needed) | IF/ID | 1 bubble |
+| taken conditional branch | EX | IF/ID + ID/EX | 2 bubbles |
+| `jalr` | EX (needs rs1) | IF/ID + ID/EX | 2 bubbles |
+| `ecall` trap entry | EX | IF/ID + ID/EX, and EX/MEM (the `ecall` itself is squashed, not retired) | 2 bubbles |
+| `mret` | EX | IF/ID + ID/EX (`mret` itself retires) | 2 bubbles |
+| `ebreak` shadow | EX, held through MEM and WB | IF/ID + ID/EX, continuously | — |
+
+Flushing means writing the bubble encoding — every field zero, `valid = 0` —
+into the register, so the killed instruction has no architectural effect and is
+neither retired nor traced.
+
+`jal` flushes only IF/ID: the `jal` is itself in ID and must go on into EX to
+compute and write its link value, so ID/EX must *not* be cleared. Everything
+resolved in EX flushes both, because both younger slots are on the wrong path.
+
+```
+  Taken branch: 2 bubbles                    jal: 1 bubble
+
+           c1   c2   c3   c4   c5   c6                c1   c2   c3   c4   c5
+ beq(T)    IF   ID   EX   MEM  WB          jal        IF   ID   EX   MEM  WB
+ B+4            IF   ID   x                J+4             IF   x
+ B+8                 IF   x                target               IF   ID   EX
+ target                   IF   ID   EX                          ^
+                     ^                                          PC redirected
+                     PC redirected at the end of c3             at the end of c2
+                     x = flushed to a bubble
+```
+
+An `ebreak` does not redirect the PC — it is not a trap — but nothing behind it
+may commit. It therefore holds IF/ID and ID/EX empty from the moment it reaches
+EX until it retires and the sticky `done` flag freezes the machine. The shadow
+is tracked across EX, MEM and WB rather than only in EX, so a fresh fetch cannot
+slip in behind it during the two cycles it takes to drain.
+
+**A redirect overrides a stall.** The instruction in ID that raised the stall is
+being killed anyway, so waiting for it would deadlock the redirect. This is
+expressed in three places, deliberately redundantly: `stall` is suppressed while
+a flush is happening, `flush` beats `stall` inside every pipeline register
+(`if (rst || flush) … else if (!stall) …`), and the fetch enable is
+`~halt & (redirect | ~stall)` so the PC and instruction memory advance to the
+redirect target even during a stall cycle.
+
+One consequence is easy to get wrong: **a `jal` must never be stalled.** A
+stall holds IF/ID and bubbles ID/EX, which is right for an instruction that is
+waiting — but a `jal` in ID has already committed the machine to its target by
+the time the stall takes effect, so holding it would redirect the PC and then
+delete the `jal` itself, silently losing its link-register write. A `jal` reads
+no registers, so the interlock condition cannot fire on one; the hazard unit
+nevertheless suppresses `stall` whenever `redirect_id` is asserted, so the
+invariant is enforced structurally rather than left to depend on the decoder.
+Removing that term and simultaneously over-approximating the interlock (taking
+rs1/rs2 straight from the instruction bits instead of asking the decoder
+whether they are really read) makes `asm/prog/bloop` lose exactly one retired
+instruction per loop iteration — which is how the term earned its place.
+
+`asm/hazard/branch_flush.s` puts poison instructions (`addi x10, x0, 999`) in
+every shadow slot; if any of them survives, the register compare and the commit
+trace both fail.
+
+### 6.4 CSR hazards
+
+There are none to interlock. `csr.v` sits in EX and does its read-modify-write
+in a single cycle: the value presented on `csr_rdata` is the pre-write
+architectural value and the modified value is committed on the same clock edge.
+An instruction one slot behind therefore reaches EX a cycle later and reads the
+already-updated register. `csrw mepc, t0` immediately followed by `mret` works
+for the same reason — `mepc` is written at the end of the cycle in which the
+`csrw` is in EX, and `mret` reads it in its own EX the next cycle.
+
+What *does* need forwarding is the register side of a CSR instruction: the
+write source is rs1, so it goes through `fwd_a` like any other operand, and the
+destination register receives the old CSR value through the ordinary write-back
+path — which is why the ALU/`PC+4`/CSR result mux lives in EX (section 5.2), so
+that a consumer of `csrrw`'s `rd` forwards the CSR value and not the unused ALU
+output. `asm/hazard/csr_hazard.s` exercises all three cases.
+
+### 6.5 `FORWARDING = 0` — the stall-only build
+
+`FORWARDING` is a compile-time parameter on `cpu_top`, threaded to both hazard
+modules. Setting it to 0 forces every forwarding select to `2'b00`, so an
+operand can only ever come from the register file. Correctness is then restored
+by stalling instead: the instruction in ID waits while *any* pending write to
+one of its source registers is still in EX or in MEM.
+
+```
+stall = ID reads a register that a valid instruction in EX or in MEM will
+        write, with rd != 0
+```
+
+A producer in EX costs two stall cycles, a producer in MEM costs one, and a
+producer already in WB costs none because the register file's WB→ID bypass
+covers it — hence a maximum of two. Loads need no special case: the general
+rule already holds the consumer until the load reaches WB, where its data is
+valid.
+
+```
+  FORWARDING = 0, distance-1 dependency
+
+              c1   c2   c3   c4   c5   c6   c7
+ addi x5,..   IF   ID   EX   MEM  WB
+ add x6,x5,x5      IF   ID   ID   ID   EX   MEM
+                        ^^   ^^   ^^
+                        |    |    +- producer in WB: regfile WB->ID bypass,
+                        |    |       no stall, reads the correct value
+                        |    +------ producer in MEM: still stalled
+                        +----------- producer in EX: stalled
+```
+
+The two builds are functionally identical — every test in `asm/insn`,
+`asm/hazard`, `asm/prog` and `tb/bringup` passes under both — and differ only in
+cycle count. That difference, measured by the performance counters, is the
+"show the performance of your CPU" experiment of section 11.
+
+### 6.6 What the performance counters count
+
+| Counter | Increment condition |
+|---|---|
+| `cycles` | every cycle after reset |
+| `insns` | a valid, non-illegal instruction leaves WB (`ebreak` included, a squashed `ecall` excluded) |
+| `lu_stalls` | every interlock cycle: load-use cycles when `FORWARDING = 1`, every RAW stall cycle when `FORWARDING = 0` |
+| `flushes` | one per control-flow redirect event — taken branch, `jalr`, `jal`, `ecall` trap or `mret` — not one per killed slot; the `ebreak` shadow is not counted, it is not a mispredicted control transfer |
+| `bht_preds`, `bht_misses` | branch-prediction bonus, section 9 |
+
+The `retire`, `lu_stall` and `flush` pulses are all gated off the moment `done`
+goes high, and the testbench stops the simulation on the next edge, so a
+measurement ends exactly at the `ebreak` and nothing in the drain shadow is
+counted. CPI is `cycles / insns`; the testbench prints it as `CPI_x1000` to
+stay in integer arithmetic.
 
 ---
 
@@ -621,26 +874,271 @@ implemented — direct-mapped 128 x 16 B, and why it was cut). -->
 
 ## 10. Verification
 
-<!-- TODO(step 5-6): three verification tiers (unit testbenches, per-instruction
-tests, ISS differential testing), the commit-trace format, the test matrix and
-its results. Sections completed so far: imm_gen, alu, regfile unit tests, and
-the decode test described below. -->
+### 10.1 Strategy: three tiers
 
-The decode logic of sections 3 and 4 is verified by `tb/tb_control.v`, which
-instantiates `control.v` and `alu_ctrl.v` together and drives them from
-machine-generated vectors. Each vector is an instruction word plus the packed
-expected value of all nineteen decoded signals. The vectors come from
-`tools/gen_control_table.py`: the stimulus words are produced by the project
-assembler from ordinary source operands, the expected mnemonic of every word is
-confirmed by the reference simulator's decoder, and the expected control values
-come from the same dictionary that generates the table in section 3. The suite
-covers every one of the 46 encodings with randomised registers and immediates
-(including the negative immediates and shift amounts that set `inst[30]`, and
-the zero/non-zero CSR source cases), plus a pool of illegal encodings — bad
-`funct7` values, unsupported `funct3` values, `wfi`, and unknown opcodes — that
-must all decode to `illegal` with every other output zero. A set of
-hand-computed golden vectors is checked as well, so a bug in the generator
-cannot mask a bug in the RTL.
+**Tier 1 — the xsim batch flow.** Every simulation, unit or program, runs
+through the same three-command Vivado 2026.1 pipeline (`xvlog` → `xelab` →
+`xsim`), invoked in batch mode with no GUI, no waveform viewer and no other
+simulator. Every testbench is self-checking: it prints exactly one line
+starting with `PASS` or `FAIL` and nothing else in the log may start a line
+that way, and the run's exit code is 0 iff a `PASS` line is present and no
+`FAIL` line is. There is no tier where a human reads a waveform to decide
+correctness — the checking is always in the testbench, never in the report.
+
+**Tier 2 — unit testbenches and per-instruction programs.** Every RTL module
+that is not pure wiring has a standalone testbench (section 10.3) driven by
+machine-generated vectors, and every one of the 46 instructions has a small
+assembly program with a hardcoded golden register file (section 10.5). This is
+the bulk of the check count and the midterm-report evidence: it demonstrates
+each piece of the decode/execute/hazard logic in isolation before anything is
+asked to work in combination.
+
+**Tier 3 — differential testing against the golden ISS.** `tools/iss.py` is a
+second, independent implementation of the same instruction set, written in
+Python without reference to the Verilog. Every program-level test — not just
+the three named benchmarks — is checked two ways: its final architectural
+register file against the ISS's, and its cycle-by-cycle commit trace against
+the ISS's instruction-by-instruction trace, line for line. A trace mismatch
+localizes a bug to a specific retiring instruction instead of only reporting
+"final state wrong," which for a five-stage pipeline is the difference between
+an afternoon of debugging and a week of it.
+
+The project does not use Mars (MIPS-only — a different ISA family entirely,
+not a candidate) or Spike (the standard RISC-V reference simulator) as the
+oracle. Spike is a compiled C++ binary distributed as a Linux/build-from-source
+tool; it is not available for this Windows machine without installing a
+toolchain the project's environment rules forbid ("no Icarus, no GTKWave, no
+Spike — do not install anything"). Writing the reference model instead of
+importing one has a second benefit: building `iss.py` forces the same
+instruction-set questions the RTL has to answer (sign extension, shift-amount
+truncation, trap semantics) to be resolved once, explicitly, in a form that is
+easy to read and to test — which is also why it doubles as the assembler's
+own cross-validation oracle (10.2) rather than being written after the fact
+purely to check the RTL.
+
+### 10.2 Toolchain: assembler and golden ISS
+
+**`tools/asm.py`** is a two-pass RV32I assembler. Pass 1 collects labels and
+`.equ` constants and sizes every instruction (needed because `li` expands to
+one instruction when its constant fits 12 signed bits and to two — `lui` +
+`addi` — otherwise, and `la` always expands to two); pass 2 emits the encoded
+words. It understands all six instruction formats (R/I/S/B/U/J), the assembler
+directives needed by the test programs (`.text`, `.data`, `.equ`, `.space`,
+`.align n` to an n-byte boundary, n a power of two), and the pseudo-ops used
+throughout `asm/` (`li`, `la`, `nop`, `mv`, branch-with-zero forms, and the
+like). Output is exactly 1024 lowercase 8-hex-digit lines — a full
+`$readmemh`-loadable image of the 4 KB instruction memory — plus a matching
+`<name>.data.hex` when the source has a non-empty `.data` section.
+
+**`tools/iss.py`** is the golden reference. It models Harvard instruction/data
+memories, the full register file with `x0` hardwired, the CSR subset of
+section 8, and trap/`mret`/interrupt semantics identical to the RTL's (traps
+taken at the point a real instruction would be in EX, `mepc`/`mcause`/`MIE`/
+`MPIE` updated the same way, direct-mode `mtvec`). It exposes `Cpu(text,
+data).step()` / `.run()` and returns exit codes that the rest of the toolchain
+treats as a contract: **0** = halted on `ebreak`, **2** = `--max-insns`
+exceeded, **3** = illegal instruction.
+
+Every retiring instruction emits one commit-trace line:
+
+```
+<pc (8 hex)> <insn (8 hex)> [x<rd>=<value (8 hex)>] [mem[<addr (8 hex)>]=<value (8 hex)>]
+```
+
+both bracketed fields are omitted when they do not apply (a branch, or an
+instruction with `rd = x0`), and the whole line is lowercase. Three examples:
+
+```
+00000000 00a00293 x5=0000000a          # addi x5, x0, 10   (ALU op, rd write)
+00000008 00628023 mem[00000003]=000000ff   # sb x6, 0(x5)  (store, masked to a byte)
+00000018 00100073                          # ebreak — pc and insn only, no rd, no mem
+```
+
+`tools/test_tools.py` cross-validates the assembler against the ISS: 54
+hand-verified 32-bit encodings, computed field-by-field from the RV32I format
+tables *before* the assembler existed (so a shared misreading of the spec by
+both tools cannot hide behind agreement), plus encode → decode round trips at
+every immediate-format boundary value (`-2048`/`+2047`, `±4096`, `±1 MiB`,
+zero, all-ones), semantic checks (sign extension, partial stores, shifts,
+comparisons, branches, jumps, CSR read-modify-write, traps, interrupts, `x0`),
+pseudo-instruction expansion, assembler error cases, and a byte-exact check of
+the commit-trace format above through the CLI. The suite runs 4323 checks and
+exits 0 only if every one of them passes.
+
+### 10.3 Unit-level testbenches
+
+Every vector file for these testbenches is generated by the already
+cross-validated tools (`asm.encode`, `iss.decode`, or the `CONTROL` dictionary
+that also produces section 3's table) — never by a second, independent
+re-implementation of the same bit shuffle the RTL is being checked against.
+That rule is stated explicitly in `tools/gen_imm_vectors.py` and
+`tools/gen_control_table.py`: a hand-rewritten immediate extractor or decode
+table would only duplicate whatever the RTL author misunderstood about the
+spec, not catch it.
+
+| Testbench | DUT | What it checks | Checks |
+|---|---|---|---|
+| `tb_imm_gen` | `imm_gen.v` | all six immediate formats; 1846 vectors derived from the ISS's own `Decoded.imm`/`Decoded.zimm` fields, plus 19 hand-computed goldens for the classic extraction traps: B-format `imm[11] ← inst[7]`, J-format `imm[11] ← inst[20]`, I-format `0x800` (most-negative 12-bit value), `srai rd,rs1,31` (shamt 31 with `inst[30]` set) | 1865 |
+| `tb_alu` | `alu.v` | all 11 ALU operations across signed/unsigned extremes and every shift amount | 5072 |
+| `tb_regfile` | `regfile.v` | the WB→ID internal bypass, and that `x0` reads zero and ignores writes | 76 |
+| `tb_control` | `control.v` + `alu_ctrl.v` | the full truth table of section 3 for all 46 encodings, including the `addi`-with-`inst[30]`-set trap; 519 legal vectors + 120 illegal vectors (bad `funct7`, unsupported `funct3`, `wfi`, unknown opcodes) + 28 hand-computed goldens | 667 |
+| `tb_branch_unit` | `branch_unit.v` | all six branch conditions across signed/unsigned comparison extremes | 16072 |
+| `tb_dmem` | `dmem.v` | byte lanes for `sb`/`sh`/`sw`, sign/zero extension for `lb`/`lh`/`lbu`/`lhu`/`lw` | 32 |
+| `tb_imem` | `imem.v` | synchronous read timing and enable behavior | 10 |
+| `tb_pc` | `pc.v` | reset, hold-on-stall, load-on-redirect | 12 |
+| `tb_perf_counters` | `perf_counters.v` | the five counters of section 6.6 | 19 |
+
+### 10.4 Mutation checks
+
+A unit testbench is not trusted until it is shown to fail. Before being
+accepted, every testbench in section 10.3 was run once against a deliberately
+broken copy of its DUT and confirmed to report `FAIL`; only then was the
+correct RTL restored. This catches the case where a testbench passes not
+because the DUT is right but because the testbench itself has a bug (an
+inverted comparison, a vector file that never got regenerated, a check that
+silently short-circuits). The injected bugs and the check that caught each:
+
+| Injected bug | Where | Caught by |
+|---|---|---|
+| `SRA` implemented as a logical shift (no sign extension) | `alu.v` | `tb_alu` (negative-operand shift vectors) |
+| WB→ID internal bypass removed | `regfile.v` | `tb_regfile` |
+| B-format immediate bit flipped (wrong source bit for `imm[11]`) | `imm_gen.v` | `tb_imm_gen` |
+| `alu_ctrl` consults `inst[30]` for `addi` (I-type `funct3 = 000`) | `alu_ctrl.v` | `tb_control` (the addi/sub trap goldens) |
+| Forwarding priority swapped — MEM/WB checked before EX/MEM | `forward_unit.v` | `asm/hazard/fwd_ex_ex.s` |
+| `rd != 0` guard removed from the forwarding comparison (forwards from `x0`) | `forward_unit.v` | `asm/hazard/x0_hazard.s` |
+| Load-use interlock disabled | `hazard_unit.v` | `asm/hazard/load_use.s` |
+| `lb` sign extension removed (treated as `lbu`) | `dmem.v` | `tb_dmem`, and `asm/insn/lb.s` |
+
+The last four are datapath-level bugs with no meaningful unit-level DUT of
+their own (forwarding and the load-use stall only manifest across the pipeline
+boundary they cross), so they are caught by the hazard programs of section
+10.6 and the per-instruction programs of 10.5 rather than by an isolated
+module testbench — consistent with the fact that `forward_unit.v` and
+`hazard_unit.v` are combinational functions of pipeline-register fields, not
+of anything a standalone testbench could drive meaningfully on its own.
+
+### 10.5 Per-instruction programs (`asm/insn/`, 46 programs)
+
+One program per encoding, each with at least four semantic cases (e.g. `add`
+covers positive+positive, positive+negative, and signed overflow wraparound;
+loads cover sign-extended, zero-extended, and unaligned-within-word cases).
+Results land in `x5`–`x31`, and every program ends in `ebreak`. The expected
+32-register file (`<name>.regs`) and the expected commit trace (`<name>.trace`)
+are both generated by the ISS, not hand-typed, via `tools/gen_fixtures.py`.
+`tb/tb_program.v` is the single generic testbench for all of them: given
+`+PROG=asm/insn/<name>`, it loads `<name>.hex`, runs the DUT to `done`,
+compares all 32 architectural registers against `<name>.regs`, and diffs the
+commit trace line-by-line against `<name>.trace`.
+
+Programs written before the hazard logic existed (build step 4) are
+NOP-padded — three `nop`s between a write and the next read of the same
+register, since with no forwarding the value is not available until it
+retires into the register file. Once the per-instruction programs run under
+full hazard logic (`+NOTRACE` no longer needed — see 10.7), the NOP padding
+stops being a correctness requirement but is left in place; one exception was
+found to already exercise forwarding regardless of padding intent: `li`
+expands to `lui` + `addi`, a distance-1 (immediately-adjacent) RAW dependency
+on the very register `li` is defining, so every per-instruction program that
+uses `li` for an operand outside the ±2048 range incidentally forwards through
+that pair before it does anything else.
+
+### 10.6 Hazard programs (`asm/hazard/`, 9 programs)
+
+Each program is not NOP-padded — that is the point — and each targets one
+hazard class. The register named is the one the program's own comments
+identify as the value that comes out wrong if the corresponding logic is
+broken:
+
+| Program | Hazard class | Wrong-if-broken value |
+|---|---|---|
+| `fwd_ex_ex.s` | EX/MEM-forwarding-wins-over-MEM/WB priority; back-to-back dependent ALU chain | `x11` (must forward EX/MEM's 101, not MEM/WB's stale 100) |
+| `fwd_mem_ex.s` | distance-2 dependency (producer two instructions back, MEM/WB forward) | producer-in-MEM value seen where the WB value is required |
+| `fwd_wb_id.s` | distance-3 dependency (producer three instructions back, regfile WB→ID bypass) | stale pre-write register value |
+| `load_use.s` | load-use interlock, all operand positions (rs1, rs2, both, store address, store data, branch operand) | loaded value used one cycle too early (garbage instead of `0x1234`) |
+| `store_data_fwd.s` | store-data (rs2) forwarding into `dmem.wdata` | wrong word stored to memory |
+| `branch_flush.s` | control-hazard flush completeness (both EX-resolved shadow slots) | a poison instruction (`addi x10, x0, 999`) survives and corrupts `x10` |
+| `x0_hazard.s` | never-forward-from-`x0` guard | `x0` observed non-zero for one cycle |
+| `csr_hazard.s` | CSR read-after-write same-cycle visibility, and rs1→CSR-write-source forwarding | stale CSR value read one instruction too early |
+| `mixed.s` | combinations of the above in one instruction stream | any of the above, in combination |
+
+### 10.7 Program-level diff tests (`asm/prog/`)
+
+| Program | What it does | Instructions retired | Pass criterion |
+|---|---|---|---|
+| `fib.s` | iterative Fibonacci into a DMEM array, checksum + copy pass | 658 | fib(30) = 832040 in the destination register; zero differing trace lines; identical register file |
+| `bsort.s` | bubble sort of 16 words including negative values | 1366 | sorted array in DMEM; zero differing trace lines; identical register file |
+| `bloop.s` | branch-heavy loop exercising every branch condition repeatedly | 2878 | zero differing trace lines; identical register file |
+| `irq_demo.s` | interrupt bonus demonstration, two external interrupts | 633 | correct `mepc`/`mcause`/ISR side effects (section 8.2); zero differing trace lines; identical register file |
+
+A "differing trace line" is any line where the RTL's WB-stage commit trace and
+the ISS's trace disagree once both are diffed line-by-line by `tb_program.v`;
+the pass criterion is that this diff is empty and the two final 32-register
+files are bit-identical.
+
+### 10.8 Bring-up programs (`tb/bringup/`, 7 programs)
+
+`bu_alu`, `bu_branch_nt`, `bu_branch_t`, `bu_csr`, `bu_data`, `bu_mem`,
+`bu_trap` — strictly hazard-free by construction (every dependency is
+NOP-padded to distance ≥ 4, so no forwarding or stalling is ever required to
+get the right answer) and used to validate the five-stage datapath of section
+5 *before* the hazard logic of section 6 existed. At build step 4 (no
+forwarding, no flush) they are run with `+NOTRACE`, so only the final register
+file is checked — 5 of the 7 (excluding the branch-taken and trap programs,
+whose wrong-path shadow instructions the unflushed pipeline still retires) are
+trace-exact even at that stage. Once flushing exists, all 7 are checked both
+ways, matching the per-instruction programs' full trace-exact criterion.
+
+### 10.9 Regression command set
+
+```
+# one unit testbench
+bash sim/run.sh tb_alu
+bash sim/run.sh tb_control
+
+# batch driver: every program in a directory, PASS/FAIL summary + PERF line
+python tools/run_tests.py --dir asm/insn
+python tools/run_tests.py --dir asm/insn --dir asm/hazard
+python tools/run_tests.py --dir asm/prog
+
+# CPI comparison: force the FORWARDING compile-time parameter
+python tools/run_tests.py --dir asm/prog --fwd 1
+python tools/run_tests.py --dir asm/prog --fwd 0
+
+# regenerate fixtures / control table after an ISA or control change
+python tools/gen_fixtures.py
+python tools/gen_control_table.py
+python tools/gen_control_table.py --check   # fail if stale
+
+# toolchain cross-validation (no RTL involved)
+python tools/test_tools.py
+```
+
+`sim/run.sh` reuses one xsim work directory per testbench, so program-level
+runs are sequential rather than parallel; each xsim launch costs roughly
+5–10 seconds, which is why `tools/run_tests.py` exists as a batch driver
+rather than invoking `run.sh` once per program by hand.
+
+### 10.10 Results summary
+
+*Measured on commit `28768aa` (step 5). Rows marked TBD are re-measured in the
+final regression after the bonus features.*
+
+| Suite | Programs / vectors | PASS at `FORWARDING=1` | PASS at `FORWARDING=0` |
+|---|---|---|---|
+| `tb_imm_gen` | 1865 vectors | PASS | — |
+| `tb_alu` | 5072 vectors | PASS | — |
+| `tb_regfile` | 76 vectors | PASS | — |
+| `tb_control` | 667 vectors | PASS | — |
+| `tb_branch_unit` | 16072 vectors | PASS | — |
+| `tb_dmem` | 32 vectors | PASS | — |
+| `tb_imem` | 10 vectors | PASS | — |
+| `tb_pc` | 12 vectors | PASS | — |
+| `tb_perf_counters` | 19 vectors | PASS | — |
+| `asm/insn/*` | 46 programs | 46/46 | TBD (final regression) |
+| `asm/hazard/*` | 9 programs | 9/9 | 9/9 |
+| `asm/prog/*` | 4 programs | 3/3 core (irq_demo after §9) | 3/3 core |
+| `tb/bringup/*` | 7 programs | 7/7 | TBD (final regression) |
+| `tools/test_tools.py` | 4323 checks | PASS (tool-level, not RTL) | — |
 
 ---
 
