@@ -2,40 +2,58 @@
 //=============================================================================
 // forward_unit.v -- EX-stage operand forwarding selects.
 //
-// STATUS: build step 4 STUB.  The port list, the select encoding and the
-// FORWARDING parameter below are final; the body currently drives every select
-// to 2'b00 (= use the value read from the register file in ID) so the step-4
-// datapath is a plain NOP-padded machine with no bypasses.  Build step 5 fills
-// the always block in -- nothing outside this file has to change.
+// Purely combinational.  Compares the register numbers the instruction in EX
+// reads against the destinations of the two older instructions still in flight
+// (the one in MEM, held by the EX/MEM register, and the one in WB, held by the
+// MEM/WB register) and picks where each EX operand should come from.
 //
 // Select encoding (shared by all three outputs):
-//   2'b00  register-file value carried in ID/EX
-//   2'b10  EX/MEM result  (older instruction, one stage ahead)
-//   2'b01  MEM/WB result  (oldest instruction, two stages ahead)
+//   2'b00  the register-file value carried in ID/EX (no forward needed)
+//   2'b10  EX/MEM result  (the instruction one stage ahead -- the NEWER one)
+//   2'b01  MEM/WB write data (the instruction two stages ahead -- OLDER)
 //
-// Rules that step 5 must implement (docs/DESIGN.md section 6):
-//   * EX/MEM has PRIORITY over MEM/WB.  MEM/WB forwards only when EX/MEM does
-//     not match.  (Forwarding the older value would resurrect a stale result.)
-//   * Never forward from x0: a producer with rd = 0 wrote nothing, and x0 must
-//     read as 0.  Both the rd != 0 test here and the x0 test in regfile.v are
-//     required.
-//   * fwd_a  -> ALU operand A source (rs1)
-//     fwd_b  -> ALU operand B source (rs2, before the rs2/immediate mux)
-//     fwd_c  -> store-data source (rs2 of sb/sh/sw).  Logically identical to
-//               fwd_b, kept separate so the store-data path is explicit in the
-//               datapath drawing and can be checked independently.
-//   * FORWARDING = 0 (the CPI-comparison build) must force all three selects to
-//     2'b00; hazard_unit.v then stalls on every RAW hazard instead.
+// Three separate selects because three different EX operands need forwarding:
+//   fwd_a  ALU operand A / branch compare rs1 / CSR write source (rs1)
+//   fwd_b  ALU operand B and branch compare rs2, taken BEFORE the rs2 vs.
+//          immediate mux (a branch compares rs2 even though the ALU sees imm)
+//   fwd_c  store data for sb/sh/sw (rs2 again, on its own path to dmem.wdata)
 //
-//   assign fwd_a = (FORWARDING == 0)                      ? 2'b00 :
-//                  (mem_reg_we && mem_rd != 0 &&
-//                   mem_rd == ex_rs1)                     ? 2'b10 :
-//                  (wb_reg_we  && wb_rd  != 0 &&
-//                   wb_rd  == ex_rs1)                     ? 2'b01 : 2'b00;
-//   ... same shape for fwd_b (ex_rs2) and fwd_c (ex_rs2).
+// Truth table (per operand; `rs` is the operand's source register number):
 //
-// Naming note: `mem_*` are the EX/MEM register outputs (the instruction now in
-// MEM), `wb_*` are the MEM/WB register outputs (the instruction now in WB).
+//   FORWARDING | EX/MEM match           | MEM/WB match          | select
+//   -----------+------------------------+-----------------------+--------
+//        0     | (don't care)           | (don't care)          | 2'b00
+//        1     | reg_we & rd!=0 & rd==rs| (don't care)          | 2'b10
+//        1     | no                     | reg_we & rd!=0 & rd==rs| 2'b01
+//        1     | no                     | no                    | 2'b00
+//
+// Two rules the table encodes, both on the classic-bug checklist:
+//
+//  * **EX/MEM wins over MEM/WB.**  When both older instructions write the same
+//    architectural register, the one in MEM is the newer writer and its value
+//    is the one the architecture says this instruction must read.  Checking
+//    MEM/WB first would resurrect the stale value.  (asm/hazard/fwd_ex_ex.s
+//    ends with exactly that sequence: x5=100, x5=x5+1, then a consumer that
+//    must see 101 and not 100.)
+//
+//  * **Never forward from x0.**  A producer whose rd is x0 wrote nothing --
+//    the register file suppresses the write -- so forwarding its result would
+//    make x0 read non-zero for one instruction.  The `rd != 0` test here is
+//    what stops that; note it also implies `rs != 0`, so no separate check on
+//    the consumer side is needed.  (asm/hazard/x0_hazard.s.)
+//
+// Not covered here, by design: a **load** whose result is still in EX/MEM.
+// EX/MEM carries the ALU result, which for a load is the effective address,
+// not the loaded data.  hazard_unit.v's load-use interlock guarantees a
+// consumer never reaches EX while its producing load is only as far as MEM, so
+// the 2'b10 path is never taken for a load.  By the time the consumer does
+// reach EX the load is in WB and the 2'b01 path carries real load data.
+//
+// FORWARDING = 0 is the CPI-comparison build: every select is forced to 2'b00
+// and hazard_unit.v stalls on every RAW hazard instead.
+//
+// Naming: `mem_*` are the EX/MEM register outputs (instruction now in MEM),
+// `wb_*` are the MEM/WB register outputs (instruction now in WB).
 //=============================================================================
 
 module forward_unit #(
@@ -51,21 +69,29 @@ module forward_unit #(
     input  wire       wb_reg_we,
     input  wire [4:0] wb_rd,
 
-    output wire [1:0] fwd_a,        // ALU operand A (rs1)
-    output wire [1:0] fwd_b,        // ALU operand B (rs2, pre-immediate mux)
+    output wire [1:0] fwd_a,        // ALU operand A / branch rs1 / CSR source
+    output wire [1:0] fwd_b,        // ALU operand B / branch rs2 (pre-imm mux)
     output wire [1:0] fwd_c         // store data (rs2 of sb/sh/sw)
 );
 
-    // ---- STEP 4 STUB: no forwarding at all -------------------------------
-    assign fwd_a = 2'b00;
-    assign fwd_b = 2'b00;
-    assign fwd_c = 2'b00;
+    localparam FWD_ON = (FORWARDING != 0);
 
-    // Keep the (as yet unused) inputs and parameter referenced so that lint and
-    // elaboration do not prune the port list step 5 depends on.
-    // verilator lint_off UNUSED
-    wire _unused = (FORWARDING != 0) & mem_reg_we & wb_reg_we &
-                   (|ex_rs1) & (|ex_rs2) & (|mem_rd) & (|wb_rd);
-    // verilator lint_on UNUSED
+    // A producer only forwards if it really writes a register other than x0.
+    wire mem_writes = FWD_ON && mem_reg_we && (mem_rd != 5'd0);
+    wire wb_writes  = FWD_ON && wb_reg_we  && (wb_rd  != 5'd0);
+
+    // rs1
+    assign fwd_a = (mem_writes && (mem_rd == ex_rs1)) ? 2'b10 :
+                   (wb_writes  && (wb_rd  == ex_rs1)) ? 2'b01 :
+                                                        2'b00;
+    // rs2, ALU / branch path
+    assign fwd_b = (mem_writes && (mem_rd == ex_rs2)) ? 2'b10 :
+                   (wb_writes  && (wb_rd  == ex_rs2)) ? 2'b01 :
+                                                        2'b00;
+    // rs2, store-data path (same rule, kept explicit so the store path can be
+    // reasoned about and tested on its own -- asm/hazard/store_data_fwd.s)
+    assign fwd_c = (mem_writes && (mem_rd == ex_rs2)) ? 2'b10 :
+                   (wb_writes  && (wb_rd  == ex_rs2)) ? 2'b01 :
+                                                        2'b00;
 
 endmodule

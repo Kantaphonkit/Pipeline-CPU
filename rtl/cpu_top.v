@@ -2,12 +2,11 @@
 //=============================================================================
 // cpu_top.v -- RV32I 5-stage in-order pipeline (IF -> ID -> EX -> MEM -> WB).
 //
-// Build step 4: the complete datapath, PC-select mux, CSR/trap/mret path and
-// commit-trace/perf ports are wired.  The hazard logic is NOT: forward_unit.v
-// and hazard_unit.v are stubs that drive their outputs inactive, so there is no
-// forwarding, no load-use interlock and no flushing of wrong-path instructions.
-// Step 5 fills those two modules in; every signal they need is already routed
-// here and this file changes only to connect the perf pulses.
+// The complete datapath, PC-select mux, CSR/trap/mret path, hazard logic and
+// commit-trace/perf ports are wired.  forward_unit.v supplies the three EX
+// operand bypasses, hazard_unit.v the load-use interlock (or, with
+// FORWARDING=0, the stall-on-any-RAW rule used for the CPI comparison) and the
+// flush signals for every control-flow redirect.
 //
 // Stage summary
 //   IF   pc.v + PC-select mux + imem.v (synchronous read; the instruction word
@@ -98,6 +97,7 @@ module cpu_top #(
     wire [31:0] mtvec_val, mepc_val;
     wire [31:0] dmem_rdata, dmem_wmask_data;
     wire        trap_taken, mret_taken, br_taken, jalr_taken, jal_taken;
+    wire        ebreak_pending;
 
     //=========================================================================
     // IF stage
@@ -234,8 +234,11 @@ module cpu_top #(
                        (id_opcode == OP_BRANCH);
 
     // jal resolves here: target = PC + J-immediate (1-bubble redirect).
+    // Suppressed inside an ebreak's shadow: that jal is being flushed anyway,
+    // so letting it move the PC would only add a phantom flush event to the
+    // performance counters.
     wire [31:0] id_jal_target = if_id_pc + id_imm;
-    assign jal_taken   = if_id_valid & id_jal;
+    assign jal_taken   = if_id_valid & id_jal & ~ebreak_pending;
     assign redirect_id = jal_taken;
 
     //=========================================================================
@@ -422,6 +425,15 @@ module cpu_top #(
     assign redirect_ex = trap_taken | mret_taken | br_taken | jalr_taken;
     assign redirect    = redirect_ex | redirect_id;
 
+    // `ebreak` does not redirect the PC, but nothing behind it may commit, so
+    // IF/ID and ID/EX are held empty from the moment it reaches EX until the
+    // sticky `done` flag freezes the machine three cycles later.  Tracking it
+    // through MEM and WB as well (rather than only in EX) keeps the shadow
+    // continuous instead of letting a fresh fetch slip in behind it.
+    assign ebreak_pending = (ex_valid  & ex_ebreak)  |
+                            (mem_valid & mem_ebreak) |
+                            (wbs_valid & wbs_ebreak);
+
     wire [31:0] ex_branch_target = ex_pc + ex_imm;              // PC + B-imm
     wire [31:0] ex_jalr_target   = alu_y & ~32'h0000_0001;      // (rs1+imm) & ~1
 
@@ -447,7 +459,8 @@ module cpu_top #(
     end
 
     // The trapping instruction is squashed, not retired (trace and perf must
-    // not see it).  Everything younger is killed by the flush logic in step 5.
+    // not see it).  Everything younger is killed by hazard_unit.v's flush_if /
+    // flush_id, which fire on the same redirect.
     wire flush_ex = trap_taken & ~halt;
 
     //=========================================================================
@@ -574,15 +587,19 @@ module cpu_top #(
     //=========================================================================
     // Performance counters
     //=========================================================================
-    // TODO(step 5): .lu_stall(stall & ~halt) and
-    //               .flush(redirect & ~halt) once hazard_unit.v is real.
+    // `lu_stall` counts interlock cycles: load-use cycles when FORWARDING=1,
+    // and every RAW stall cycle when FORWARDING=0 (that difference is the CPI
+    // experiment).  `flush` counts control-flow redirect events -- a taken
+    // branch, jalr, jal, ecall trap or mret -- one per event, not per killed
+    // slot; the `ebreak` shadow is deliberately not counted, it is not a
+    // control-flow misprediction.
     // TODO(step 7): .bht_pred / .bht_miss from bht.v.
     perf_counters u_perf (
         .clk        (clk),
         .rst        (rst),
         .retire     (wb_retire),
-        .lu_stall   (1'b0),
-        .flush      (1'b0),
+        .lu_stall   (stall & ~halt),
+        .flush      (redirect & ~halt),
         .bht_pred   (1'b0),
         .bht_miss   (1'b0),
         .cycles     (perf_cycles),
@@ -594,7 +611,8 @@ module cpu_top #(
     );
 
     //=========================================================================
-    // Hazard unit (STEP 4 STUB -- drives stall / flush_if / flush_id to 0)
+    // Hazard unit -- load-use interlock (or the FORWARDING=0 stall-on-any-RAW
+    // rule) plus the flush signals for every control-flow redirect.
     //=========================================================================
     hazard_unit #(.FORWARDING(FORWARDING)) u_hazard (
         .id_valid    (if_id_valid),
@@ -611,6 +629,7 @@ module cpu_top #(
         .mem_rd      (mem_rd_addr),
         .redirect_ex (redirect_ex),
         .redirect_id (redirect_id),
+        .ebreak_pending (ebreak_pending),
         .stall       (stall),
         .flush_if    (flush_if),
         .flush_id    (flush_id)
@@ -619,8 +638,7 @@ module cpu_top #(
     // Signals that only step 7 consumes; referenced here so elaboration keeps
     // them and so the BHT_ENABLE parameter is not flagged as unused.
     // verilator lint_off UNUSED
-    wire _unused_step7 = csr_irq_pending & (BHT_ENABLE != 0) &
-                         mem_illegal & (|ex_rs2_addr);
+    wire _unused_step7 = csr_irq_pending & (BHT_ENABLE != 0);
     // verilator lint_on UNUSED
 
 endmodule
