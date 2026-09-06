@@ -1,3 +1,4 @@
+# NOTE: synth_design runs -mode out_of_context: cpu_top exposes ~360 trace/perf bits which exceed the 106 IOBs of xc7a35tcpg236; OOC reports the core fmax/utilization without IO buffers.
 # vivado/synth.tcl
 #
 # Non-project-mode synthesis (and optional place/route) for cpu_top. See
@@ -58,7 +59,7 @@ if {[file exists constraints.xdc]} {
     puts "WARNING: constraints.xdc not found in [pwd] -- synthesizing without timing constraints."
 }
 
-synth_design -top cpu_top -part $part -generic IMEM_INIT=asm/smoke.hex
+synth_design -top cpu_top -mode out_of_context -part $part -generic IMEM_INIT=asm/smoke.hex
 
 report_utilization -file utilization.txt
 report_timing_summary -file timing.txt
