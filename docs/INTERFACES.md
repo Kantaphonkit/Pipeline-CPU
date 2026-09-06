@@ -193,3 +193,128 @@ and the CSR module instance `u_csr` with registers named `mstatus_mie`, `mstatus
 > that holds NTFS junctions `rtl/`, `tb/`, `asm/` back to the repo, then copy `sim.log` (and
 > `.wdb`) back to `sim/work/<tb>/`. Relative `$readmemh("asm/...")` paths work unchanged.
 > Testbenches must only reference files via `rtl/`, `tb/`, `asm/` relative paths.
+
+## 8. Internal RTL encodings (fixed so modules built in parallel agree)
+
+### 8.1 `imm_gen.v`
+```verilog
+module imm_gen (input wire [31:0] inst, input wire [2:0] imm_sel, output reg [31:0] imm);
+```
+| imm_sel | Format | Bits |
+|---|---|---|
+| 3'd0 | I | `{{20{inst[31]}}, inst[31:20]}` (also used for jalr, loads, shift-imm; ALU masks `[4:0]` for shifts) |
+| 3'd1 | S | `{{20{inst[31]}}, inst[31:25], inst[11:7]}` |
+| 3'd2 | B | `{{19{inst[31]}}, inst[31], inst[7], inst[30:25], inst[11:8], 1'b0}` |
+| 3'd3 | U | `{inst[31:12], 12'b0}` |
+| 3'd4 | J | `{{11{inst[31]}}, inst[31], inst[19:12], inst[20], inst[30:21], 1'b0}` |
+| 3'd5 | Z | `{27'b0, inst[19:15]}` (CSR zimm, zero-extended) |
+| others | — | 32'b0 |
+
+### 8.2 `alu.v`
+```verilog
+module alu (input wire [31:0] a, input wire [31:0] b, input wire [3:0] alu_op, output reg [31:0] y);
+```
+| alu_op | Name | y |
+|---|---|---|
+| 4'd0 | ADD | a + b |
+| 4'd1 | SUB | a - b |
+| 4'd2 | SLL | a << b[4:0] |
+| 4'd3 | SLT | ($signed(a) < $signed(b)) ? 1 : 0 |
+| 4'd4 | SLTU | (a < b) ? 1 : 0 |
+| 4'd5 | XOR | a ^ b |
+| 4'd6 | SRL | a >> b[4:0] |
+| 4'd7 | SRA | $signed(a) >>> b[4:0] |
+| 4'd8 | OR | a \| b |
+| 4'd9 | AND | a & b |
+| 4'd10 | PASSB | b (lui: b = U-imm) |
+| others | — | 32'b0 |
+
+`b` is already the muxed operand (rs2 or immediate); the ALU always uses `b[4:0]` as shift
+amount, which satisfies both the `rs2[4:0]` and `imm[4:0]` rules. Branch comparisons are
+NOT done in the ALU — `branch_unit.v` compares rs1/rs2 directly.
+
+### 8.3 `regfile.v`
+```verilog
+module regfile (
+    input wire clk, input wire we, input wire [4:0] waddr, input wire [31:0] wdata,
+    input wire [4:0] raddr1, input wire [4:0] raddr2,
+    output wire [31:0] rdata1, output wire [31:0] rdata2);
+// reg [31:0] regs [0:31];  -- array MUST be named regs (testbench hierarchical access)
+```
+- Asynchronous (combinational) read with WB→ID bypass: if `we && waddr==raddr && waddr!=0`
+  the read returns `wdata`. Synchronous write on posedge clk; writes to x0 ignored; x0 always
+  reads 0. No reset on the array (x1..x31 uninitialized per spec §3.3). Not 2019.2-hostile:
+  plain `always @(posedge clk)` + `assign`.
+
+### 8.4 `branch_unit.v` (for step 5, listed now for completeness)
+```verilog
+module branch_unit (input wire [31:0] rs1, input wire [31:0] rs2, input wire [2:0] funct3, output wire taken);
+```
+funct3: 000 beq, 001 bne, 100 blt, 101 bge, 110 bltu, 111 bgeu; others → 0.
+
+## 9. Control signals (`control.v`, `alu_ctrl.v`)
+
+```verilog
+module control (
+    input  wire [6:0] opcode, input wire [2:0] funct3, input wire [6:0] funct7,
+    input  wire [4:0] rs1,    input wire [11:0] csr_addr,   // rs1 for CSR write-suppression, csr_addr for mret detect
+    output reg        reg_we,        // rd written
+    output reg        alu_src_a,     // 0 = rs1, 1 = PC (auipc)
+    output reg        alu_src_b,     // 0 = rs2, 1 = imm
+    output reg  [2:0] imm_sel,       // §8.1
+    output reg  [1:0] alu_class,     // 0 ADD (mem addr / auipc), 1 R-type, 2 I-type, 3 LUI(PASSB)
+    output reg        mem_re, mem_we,// funct3 carried separately for width/sign
+    output reg  [1:0] wb_sel,        // 0 alu, 1 mem, 2 pc+4, 3 csr
+    output reg        branch,        // conditional branch (resolve in EX)
+    output reg        jal,           // resolve in ID
+    output reg        jalr,          // resolve in EX
+    output reg        csr_en,        // any CSR instruction (read side)
+    output reg        csr_we,        // CSR write side actually happens (csrrw always; rs/rc: rs1/zimm != 0)
+    output reg        csr_imm,       // zimm form (use imm Z instead of rs1 value)
+    output reg        mret, ecall, ebreak,
+    output reg        illegal);
+```
+
+- `alu_ctrl(alu_class, funct3, funct7_bit30) -> alu_op[3:0]` per §8.2. **Only** class 1 (R-type)
+  and class 2 with funct3 = 101 (srli/srai) may look at bit 30. Class 2 with funct3=000 (addi)
+  is ADD regardless of bit 30 (classic bug).
+- CSR ALU op: csrrw → new = src; csrrs → new = old | src; csrrc → new = old & ~src, where
+  src = rs1 value or zimm. Computed in `csr.v`, not the ALU.
+- `illegal` = 1 for unknown opcode/funct: RTL treats as NOP (no trap) — spec doesn't require
+  illegal-instruction traps. Perf counters don't count it as retired.
+
+## 10. Pipeline plan (binding for steps 4–5)
+
+| Stage | Does |
+|---|---|
+| IF | PC register, PC-select mux, IMEM read (sync, 1 cycle → instruction available in ID). BHT lookup (step 7). |
+| ID | control decode, regfile read (with WB bypass), imm_gen, **jal target = PC + J-imm → redirect, flush IF (1 bubble)**, hazard detection (load-use stall). |
+| EX | forwarding muxes (A, B, and store-data), ALU, branch_unit, **branch/jalr resolution → redirect, flush IF+ID (2 bubbles)**, CSR read/modify, trap detection (ecall / external irq) + mepc/mcause update, mret redirect. |
+| MEM | DMEM access (sync write, sync read), byte-lane select/extend for loads in MEM→WB boundary. |
+| WB | wb mux (alu / mem / pc+4 / csr) → regfile write. Commit-trace port + perf `insns` count here. |
+
+- **PC-select priority (highest first):** reset → trap (EX, PC=mtvec) → mret (EX, PC=mepc) →
+  branch-taken/jalr (EX) → jal (ID) → BHT predicted-taken (IF, step 7) → PC+4. The stall
+  signal holds PC and IF/ID. A redirect from EX means the instruction in ID is being flushed,
+  so any stall it raised is moot — **redirect overrides stall**.
+- **Flush = insert bubble:** IF/ID and ID/EX registers cleared to a NOP with all control
+  signals 0 (`reg_we=mem_we=csr_we=branch=jal=jalr=0`, etc.).
+- **Load-use stall:** ID/EX.mem_re && ID/EX.rd != 0 && (ID/EX.rd == IF/ID.rs1 || rs2) → hold PC
+  and IF/ID one cycle, bubble ID/EX. With `FORWARDING=0`, the hazard unit stalls on *any*
+  RAW against EX/MEM or MEM/WB destinations instead (up to 2 cycles), and the forward muxes
+  are forced to pass regfile data. That parameter difference is the CPI experiment.
+- **Forwarding (FORWARDING=1):** EX/MEM.reg_we && EX/MEM.rd != 0 && rd == rs → 2'b10;
+  else MEM/WB same → 2'b01; else 2'b00. Applies to A, B, and store-data. EX/MEM source data
+  = ALU result (for loads in EX/MEM the load-use stall guarantees the consumer isn't in EX yet).
+- **ebreak:** retires normally through WB (appears in trace + counted); sets sticky `done`.
+  Instructions after it in the pipeline are flushed at the EX stage so nothing younger commits.
+- **Trap point:** EX. `mepc` ← EX-stage PC. For an external irq, the interrupt is attached to
+  the instruction currently in EX (it is squashed, not retired, mepc = its PC) — only when
+  that EX slot holds a valid (non-bubble) instruction, so mepc is always a real PC.
+- **CSR hazards:** a CSR write in EX and a CSR read by the next instruction: csr.v forwards its
+  freshly-written value combinationally (single-cycle RMW in EX), so no stall needed. `mret`
+  right after `csrw mepc` works because mepc is written at the end of the cycle in which the
+  csrw is in EX and mret reads it a cycle later in its own EX.
+- **Trace port** (`trace_*` in §6) is registered at the WB stage: `trace_valid` = 1 for one
+  cycle per retired instruction, including bubbles = 0. `trace_mem_val` for `sb`/`sh` is the
+  data masked to width (`& 0xff` / `& 0xffff`).
