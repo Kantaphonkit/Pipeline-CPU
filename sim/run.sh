@@ -123,7 +123,14 @@ RTL_FILES=(rtl/*.v)
 shopt -u nullglob
 
 echo "== xvlog ==" | tee -a "$LOG"
-"$VIVADO_BIN/xvlog" --work work "${RTL_FILES[@]}" "tb/$TB.v" 2>&1 | tee -a "$LOG"
+# NOTE: run.ps1 calls the .bat launchers (xvlog.bat) and works. The bash
+# wrappers (xvlog, a shell script) drop the leading slash of path arguments
+# before they reach the loader ("rtl/control.v" arrives as "ontrol.v"), and
+# cmd.exe //c has the same problem. Routing the .bat through powershell.exe
+# matches run.ps1 exactly and is verified working on this machine.
+powershell.exe -NoProfile -NonInteractive -Command "& '$(cygpath -w "$VIVADO_BIN")\\xvlog.bat' --work work $(
+    for f in "${RTL_FILES[@]}" "tb/$TB.v"; do printf " '%s'" "$f"; done
+)" 2>&1 | tee -a "$LOG"
 XVLOG_RC=${PIPESTATUS[0]}
 if [ "$XVLOG_RC" -ne 0 ]; then
     echo "FAIL: $TB (xvlog exited $XVLOG_RC)" | tee -a "$LOG"
@@ -151,7 +158,9 @@ if [ "$WAVE" -eq 1 ]; then
 fi
 
 echo "== xelab ==" | tee -a "$LOG"
-"$VIVADO_BIN/xelab" "${XELAB_ARGS[@]}" 2>&1 | tee -a "$LOG"
+powershell.exe -NoProfile -NonInteractive -Command "& '$(cygpath -w "$VIVADO_BIN")\\xelab.bat' $(
+    for a in "${XELAB_ARGS[@]}"; do printf " '%s'" "$a"; done
+)" 2>&1 | tee -a "$LOG"
 XELAB_RC=${PIPESTATUS[0]}
 if [ "$XELAB_RC" -ne 0 ]; then
     echo "FAIL: $TB (xelab exited $XELAB_RC)" | tee -a "$LOG"
@@ -172,7 +181,9 @@ if [ "$WAVE" -eq 1 ]; then
 fi
 
 echo "== xsim ==" | tee -a "$LOG"
-"$VIVADO_BIN/xsim" "${XSIM_ARGS[@]}" 2>&1 | tee -a "$LOG"
+powershell.exe -NoProfile -NonInteractive -Command "& '$(cygpath -w "$VIVADO_BIN")\\xsim.bat' $(
+    for a in "${XSIM_ARGS[@]}"; do printf " '%s'" "$a"; done
+)" 2>&1 | tee -a "$LOG"
 XSIM_RC=${PIPESTATUS[0]}
 
 cp -f "$LOG" "$REPO_WORK/sim.log"
