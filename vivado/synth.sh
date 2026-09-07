@@ -7,16 +7,23 @@
 # this mirrors from sim/run.sh.
 #
 # Usage:
-#   vivado/synth.sh [--impl] [--worktree]
+#   vivado/synth.sh [--impl] [--worktree] [--hex PATH] [--period NS]
 #
 #   --impl       also run opt_design/place_design/route_design and re-emit
 #                timing/utilization reports post-implementation (slow).
 #                Without it, this stops after synth_design (fast estimates).
-#   --worktree   snapshot rtl/*.v and asm/smoke.hex from the *live working
+#   --worktree   snapshot rtl/*.v and the asm images from the *live working
 #                tree* instead of `git archive HEAD`. Only use this when
 #                nothing else is concurrently editing rtl/ — the default
 #                (no flag) is the last *committed* state, which is safe to
 #                run even while another agent has rtl/ mid-edit.
+#   --hex PATH   repo-relative IMEM image (default asm/prog/bpred.hex — the
+#                largest committed program; see vivado/synth.tcl for why a
+#                real program image matters to the numbers).
+#   --period NS  clock period to constrain to (default 10.000 = 100 MHz).
+#                A non-default period suffixes the report filenames, e.g.
+#                --period 12.5 -> vivado/reports/timing_12.5ns.txt, so the
+#                100 MHz and 80 MHz runs can both be kept.
 #
 # Vivado bin dir overridable via $VIVADO_BIN (default matches CLAUDE.md /
 # sim/run.sh: D:/AMDDesigntools/2026.1/Vivado/bin).
@@ -64,6 +71,8 @@ usage() {
 
 IMPL=0
 WORKTREE=0
+HEX="asm/prog/bpred.hex"
+PERIOD="10.000"
 while [ $# -gt 0 ]; do
     case "$1" in
         --impl)
@@ -74,6 +83,16 @@ while [ $# -gt 0 ]; do
             WORKTREE=1
             shift
             ;;
+        --hex)
+            if [ $# -lt 2 ]; then echo "ERROR: --hex requires a path" >&2; exit 1; fi
+            HEX="$2"
+            shift 2
+            ;;
+        --period)
+            if [ $# -lt 2 ]; then echo "ERROR: --period requires a value in ns" >&2; exit 1; fi
+            PERIOD="$2"
+            shift 2
+            ;;
         *)
             echo "ERROR: unknown argument: $1" >&2
             usage
@@ -82,37 +101,51 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Reports are suffixed for any non-default period so a met-constraint run does
+# not silently overwrite the 100 MHz reference run.
+SUFFIX=""
+if [ "$PERIOD" != "10.000" ] && [ "$PERIOD" != "10" ]; then
+    SUFFIX="_${PERIOD}ns"
+fi
+
 SHADOW="$(cygpath -u "${LOCALAPPDATA:-$TEMP}")/pcpu_synth"
 rm -rf "$SHADOW/rtl" "$SHADOW/asm"
 mkdir -p "$SHADOW/rtl" "$SHADOW/asm"
 
 if [ "$WORKTREE" -eq 1 ]; then
-    echo "== copying rtl/ and asm/smoke.hex from the live working tree (--worktree) =="
+    echo "== copying rtl/ and the asm images from the live working tree (--worktree) =="
     cp -f "$REPO_ROOT"/rtl/*.v "$SHADOW/rtl/" || { echo "ERROR: failed to copy rtl/*.v from working tree" >&2; exit 1; }
-    cp -f "$REPO_ROOT/asm/smoke.hex" "$SHADOW/asm/smoke.hex" || { echo "ERROR: failed to copy asm/smoke.hex from working tree" >&2; exit 1; }
+    mkdir -p "$SHADOW/$(dirname "$HEX")"
+    cp -f "$REPO_ROOT/$HEX" "$SHADOW/$HEX" || { echo "ERROR: failed to copy $HEX from working tree" >&2; exit 1; }
 else
-    echo "== snapshotting rtl/ and asm/smoke.hex from 'git archive HEAD' (committed state only) =="
+    echo "== snapshotting rtl/ and $HEX from 'git archive HEAD' (committed state only) =="
     (cd "$REPO_ROOT" && git archive HEAD -- rtl) | tar -x -C "$SHADOW"
     if [ $? -ne 0 ]; then
         echo "ERROR: git archive HEAD -- rtl | tar -x failed" >&2
         exit 1
     fi
-    (cd "$REPO_ROOT" && git archive HEAD -- asm/smoke.hex) | tar -x -C "$SHADOW"
+    (cd "$REPO_ROOT" && git archive HEAD -- "$HEX") | tar -x -C "$SHADOW"
     if [ $? -ne 0 ]; then
-        echo "ERROR: git archive HEAD -- asm/smoke.hex | tar -x failed" >&2
+        echo "ERROR: git archive HEAD -- $HEX | tar -x failed" >&2
         exit 1
     fi
+fi
+
+if [ ! -f "$SHADOW/$HEX" ]; then
+    echo "ERROR: IMEM image not staged in shadow dir: $SHADOW/$HEX" >&2
+    exit 1
 fi
 
 cp -f "$REPO_ROOT/vivado/constraints.xdc" "$SHADOW/constraints.xdc"
 cp -f "$REPO_ROOT/vivado/synth.tcl" "$SHADOW/synth.tcl"
 
 cd "$SHADOW" || exit 1
-rm -f synth.log synth.jou utilization.txt timing.txt clocks.txt
+rm -f synth.log synth.jou utilization.txt timing.txt clocks.txt memory.txt constraints_gen.xdc
 
-VIVADO_ARGS=(-mode batch -source synth.tcl -log synth.log -journal synth.jou)
+VIVADO_ARGS=(-mode batch -source synth.tcl -log synth.log -journal synth.jou
+             -tclargs --hex "$HEX" --period "$PERIOD")
 if [ "$IMPL" -eq 1 ]; then
-    VIVADO_ARGS+=(-tclargs --impl)
+    VIVADO_ARGS+=(--impl)
 fi
 
 echo "== vivado (cwd=$SHADOW) =="
@@ -122,9 +155,11 @@ VIVADO_RC=$?
 REPORTS_DIR="$REPO_ROOT/vivado/reports"
 mkdir -p "$REPORTS_DIR"
 
-for f in synth.log synth.jou utilization.txt timing.txt clocks.txt; do
+for f in synth.log synth.jou utilization.txt timing.txt clocks.txt memory.txt; do
     if [ -f "$SHADOW/$f" ]; then
-        cp -f "$SHADOW/$f" "$REPORTS_DIR/$f"
+        base="${f%.*}"
+        ext="${f##*.}"
+        cp -f "$SHADOW/$f" "$REPORTS_DIR/${base}${SUFFIX}.${ext}"
     fi
 done
 
@@ -149,5 +184,20 @@ if [ ! -f "$SHADOW/synth.log" ] || ! grep -q "SYNTH_TCL_DONE" "$SHADOW/synth.log
     exit 1
 fi
 
-echo "PASS: synthesis complete. Reports in $REPORTS_DIR"
+# Memory-inference evidence: Synth 8-5584 is "RAM ... was not inferred as a
+# block RAM because ...", 8-6014/8-6430 the successful inference notes. These
+# are the messages that decide whether the ram_style attributes actually took,
+# so surface them rather than making the reader dig through a 70 kB log.
+echo ""
+echo "== memory inference messages (Synth 8-5584 / 8-6014 / 8-6430 / RAM) =="
+sed -n '/^Block RAM: Final Mapping Report/,/^Finished ROM, RAM/p' "$SHADOW/synth.log"
+grep -nE "Synth 8-(5584|6014|6430|4480|7052)" "$SHADOW/synth.log" || echo "(no Synth 8-5584/8-7052 RAM messages)"
+if [ -f "$REPORTS_DIR/memory${SUFFIX}.txt" ]; then
+    echo ""
+    echo "== memory primitive counts =="
+    grep -E "^[A-Z0-9]+ +count=" "$REPORTS_DIR/memory${SUFFIX}.txt"
+fi
+
+echo ""
+echo "PASS: synthesis complete. Reports in $REPORTS_DIR (suffix '${SUFFIX}')"
 exit 0
