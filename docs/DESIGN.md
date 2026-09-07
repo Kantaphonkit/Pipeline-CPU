@@ -1514,9 +1514,17 @@ python tools/test_tools.py
 ```
 
 `sim/run.sh` reuses one xsim work directory per testbench, so program-level
-runs are sequential rather than parallel; each xsim launch costs roughly
-5–10 seconds, which is why `tools/run_tests.py` exists as a batch driver
-rather than invoking `run.sh` once per program by hand.
+runs are sequential rather than parallel, which is why `tools/run_tests.py`
+exists as a batch driver rather than invoking `run.sh` once per program by
+hand. It also hoists compilation out of the per-program loop: every program in
+one invocation uses the same design and the same generics — only the `+PROG`
+plusarg differs — so the programs are grouped by their (`FORWARDING`,
+`BHT_ENABLE`) pair, one `xvlog` + `xelab` builds a snapshot for the group
+(`run.sh --elab-only --tag <group>`), and each program is then a bare `xsim`
+launch against it (`run.sh --sim-only --tag <group>`). Because it is literally
+the same snapshot and the same plusargs, the verdicts and cycle counts are
+unchanged; the 46-program per-instruction suite went from 347 s to 144 s.
+`--no-batch` restores the recompile-per-program path.
 
 ### 10.10 Results summary
 

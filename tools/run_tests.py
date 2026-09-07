@@ -18,7 +18,20 @@ Programs whose `.hex` or `.regs` fixture is missing are reported as SKIP and do
 not fail the run -- generate them first (tools/gen_fixtures.py).
 
 `sim/run.sh` reuses a single work directory (`sim/work/tb_program/`), so the
-simulations must run one at a time; each xsim launch costs roughly 5-10 s.
+simulations must run one at a time.
+
+Compilation is hoisted out of that loop.  Every program in one invocation is
+simulated with the same design and the same generics -- only the `+PROG`
+plusarg differs -- so the programs are grouped by their (FORWARDING,
+BHT_ENABLE) pair (a single group per invocation, since both come from the
+command line) and `sim/run.sh --elab-only --tag <group>` builds one snapshot
+up front; each program then runs `sim/run.sh --sim-only --tag <group>`, which
+is an xsim launch and nothing else.  That turns ~15 s per program into ~2 s.
+The simulations themselves are unchanged -- same snapshot, same plusargs, same
+xsim command line -- so the PASS/FAIL verdicts and the PERF numbers are
+identical.  Pass --no-batch to fall back to the historical one-shot path
+(xvlog + xelab + xsim per program), e.g. to bisect a suspected snapshot-reuse
+problem.
 
 With --irq-at the external interrupt is driven and the commit trace is checked
 against a reference generated on the fly rather than against the committed
@@ -86,6 +99,54 @@ FAIL_ANY_RE = re.compile(r"^FAIL:(.*)$", re.M)
 IRQ_TAKEN_RE = re.compile(r"^IRQ_TAKEN retire_index=(\d+) ", re.M)
 
 RTL_TRACE = os.path.join("sim", "work", "tb_program", "rtl.trace")
+
+TB = "tb_program"
+
+
+def batch_tag(fwd, bht):
+    """Snapshot tag for a (FORWARDING, BHT_ENABLE) group.
+
+    Two elaborations that differ in their generics must not share a snapshot,
+    so the tag encodes them.  `d` means "not overridden" -- the RTL default,
+    which is a different elaboration from an explicit -g of the same value
+    only in bookkeeping, but keeping them distinct costs nothing and avoids
+    surprising reuse.
+    """
+    return "f%s_b%s" % ("d" if fwd is None else fwd,
+                        "d" if bht is None else bht)
+
+
+def generic_args(fwd, bht):
+    args = []
+    if fwd is not None:
+        args += ["-g", "FORWARDING=%d" % fwd]
+    if bht is not None:
+        args += ["-g", "BHT_ENABLE=%d" % bht]
+    return args
+
+
+def build_snapshot(fwd, bht, verbose):
+    """xvlog + xelab once for a (fwd, bht) group. Returns True on success."""
+    tag = batch_tag(fwd, bht)
+    cmd = ([BASH, "sim/run.sh", TB, "--elab-only", "--tag", tag]
+           + generic_args(fwd, bht))
+    t0 = time.time()
+    proc = subprocess.run(cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT)
+    out = proc.stdout.decode("utf-8", "replace")
+    if verbose:
+        print(out)
+    if proc.returncode != 0:
+        print("ERROR: elaboration failed for group %s (rc=%d)"
+              % (tag, proc.returncode), file=sys.stderr)
+        for line in out.splitlines():
+            if ("ERROR" in line or line.startswith("FAIL")
+                    or "Error" in line):
+                print("  %s" % line, file=sys.stderr)
+        return False
+    print("elaborated snapshot %s_snap_%s in %.1f s (compile hoisted out of "
+          "the per-program loop)" % (TB, tag, time.time() - t0))
+    return True
 
 
 def read_trace(path):
@@ -170,8 +231,10 @@ def find_programs(dirs):
 
 
 def run_one(prog, notrace, fwd, bht, maxcyc, verbose, irq_at=None,
-            out_dir=None):
-    cmd = [BASH, "sim/run.sh", "tb_program", "--plusarg", "+PROG=%s" % prog]
+            out_dir=None, batch=True):
+    cmd = [BASH, "sim/run.sh", TB, "--plusarg", "+PROG=%s" % prog]
+    if batch:
+        cmd += ["--sim-only", "--tag", batch_tag(fwd, bht)]
     # With interrupts the in-testbench trace comparison is bypassed: the
     # committed .trace fixture is aligned to the reference model's interrupt
     # schedule, not the RTL's, so the diff is done here instead against a
@@ -183,10 +246,11 @@ def run_one(prog, notrace, fwd, bht, maxcyc, verbose, irq_at=None,
             cmd += ["--plusarg", "+IRQ_AT%d=%d" % (i + 1, c)]
     if maxcyc is not None:
         cmd += ["--plusarg", "+MAXCYC=%d" % maxcyc]
-    if fwd is not None:
-        cmd += ["-g", "FORWARDING=%d" % fwd]
-    if bht is not None:
-        cmd += ["-g", "BHT_ENABLE=%d" % bht]
+    if not batch:
+        # One-shot path: the generics go to xelab on this very invocation.
+        # In batch mode they were already baked into the shared snapshot by
+        # build_snapshot(), and passing them again would be ignored at best.
+        cmd += generic_args(fwd, bht)
 
     proc = subprocess.run(cmd, cwd=REPO_ROOT, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT)
@@ -250,6 +314,10 @@ def main():
                          "interrupt points")
     ap.add_argument("--only", default=None, metavar="SUBSTR",
                     help="only run programs whose path contains SUBSTR")
+    ap.add_argument("--no-batch", action="store_true",
+                    help="do not reuse one elaborated snapshot across the "
+                         "run; recompile per program (the pre-2026-09-07 "
+                         "behaviour, kept as an escape hatch)")
     ap.add_argument("-v", "--verbose", action="store_true",
                     help="echo each simulation log")
     args = ap.parse_args()
@@ -276,6 +344,10 @@ def main():
               file=sys.stderr)
         return 1
 
+    batch = not args.no_batch
+    if batch and not build_snapshot(args.fwd, args.bht, args.verbose):
+        return 1
+
     results = []
     skipped = []
     t0 = time.time()
@@ -296,7 +368,8 @@ def main():
         r = run_one(base, args.notrace, args.fwd, args.bht, args.maxcyc,
                     args.verbose, irq_at=irq_at,
                     out_dir=os.path.join(REPO_ROOT, "sim", "work",
-                                         "tb_program"))
+                                         "tb_program"),
+                    batch=batch)
         results.append(r)
         print("%-4s %-28s cycles=%-7d insns=%-6d %s" % (
             "PASS" if r["passed"] else "FAIL", base, r["cycles"], r["insns"],

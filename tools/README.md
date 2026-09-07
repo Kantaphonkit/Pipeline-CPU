@@ -26,7 +26,20 @@ python tools/run_tests.py --dir asm/insn                 # trace + register chec
 python tools/run_tests.py --dir asm/prog --fwd 0         # forwarding off
 python tools/run_tests.py --dir asm/prog --bht 0         # predictor off
 python tools/run_tests.py --dir asm/prog --irq-at 200,500  # external interrupts
+python tools/run_tests.py --dir asm/insn --no-batch        # recompile per program
 ```
+
+**One elaboration per run, not per program.** Every program in one invocation
+is simulated with the same design and the same generics -- only the `+PROG`
+plusarg differs -- so the programs are grouped by their (`FORWARDING`,
+`BHT_ENABLE`) pair and `sim/run.sh --elab-only --tag <group>` builds a single
+snapshot up front; each program then runs `sim/run.sh --sim-only --tag
+<group>`, which is one `xsim` launch and nothing else. The simulations are
+byte-for-byte the same ones the per-program path ran -- same snapshot, same
+plusargs -- so the PASS/FAIL verdicts and PERF numbers are unchanged; only the
+`xvlog` + `xelab` that dominated the wall time is gone. Measured on
+`--dir asm/insn` (46 programs): **347 s -> 144 s**. `--no-batch` restores the
+old recompile-per-program path as an escape hatch.
 
 **Interrupt programs are diffed through a derived-index flow, not against the
 committed `.trace` fixture.** `iss.py --irq-after N` traps at the boundary

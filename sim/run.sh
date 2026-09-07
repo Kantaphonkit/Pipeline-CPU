@@ -6,6 +6,7 @@
 #
 # Usage:
 #   sim/run.sh <tb_name> [-g NAME=VALUE ...] [--plusarg +X=Y ...] [--wave]
+#                        [--tag TAG] [--elab-only | --sim-only]
 #
 #   <tb_name>          module name; source must be tb/<tb_name>.v
 #   -g NAME=VALUE      repeatable; passed to `xelab -generic_top "NAME=VALUE"`
@@ -16,6 +17,29 @@
 # Exit code is 0 iff sim/work/<tb>/sim.log contains a line starting with
 # "PASS" and no line starting with "FAIL". Compile/elaborate errors are
 # always nonzero.
+#
+# --- Snapshot reuse (--elab-only / --sim-only / --tag) ----------------------
+# The default one-shot path above runs xvlog + xelab + xsim on every
+# invocation.  That is the right default for a single run, but a regression
+# sweep re-pays the ~5 s compile and ~7 s elaborate for every program even
+# though the design and its generics never change across the sweep; only the
+# +PROG plusarg does.  Measured on this machine: ~13 s of the ~15 s spent per
+# program was recompilation.
+#
+#   --elab-only   run xvlog + xelab, build the snapshot, exit 0.  No xsim, so
+#                 no PASS line is expected and the PASS/FAIL check is skipped.
+#   --sim-only    skip xvlog + xelab and run xsim against an already-built
+#                 snapshot (errors out if the snapshot is absent).
+#   --tag TAG     suffix the snapshot name with _TAG.  Two elaborations that
+#                 differ only in their -g generics (e.g. FORWARDING=0 vs 1)
+#                 must not share a snapshot, so the batch caller passes a tag
+#                 derived from the generics.  Default: no suffix, i.e. exactly
+#                 the historical snapshot name <tb>_snap.
+#
+# Neither flag changes what the simulator does; --elab-only + N x --sim-only
+# is byte-for-byte the same set of xsim runs as N one-shot invocations, just
+# with the compile hoisted out of the loop.  tools/run_tests.py uses this
+# path; every other caller gets the unchanged one-shot behaviour.
 #
 # Vivado bin dir is overridable via $VIVADO_BIN (default matches CLAUDE.md).
 #
@@ -50,7 +74,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VIVADO_BIN="${VIVADO_BIN:-/d/AMDDesigntools/2026.1/Vivado/bin}"
 
 usage() {
-    echo "Usage: $0 <tb_name> [-g NAME=VALUE ...] [--plusarg +X=Y ...] [--wave]" >&2
+    echo "Usage: $0 <tb_name> [-g NAME=VALUE ...] [--plusarg +X=Y ...] [--wave] [--tag TAG] [--elab-only|--sim-only]" >&2
 }
 
 if [ $# -lt 1 ]; then
@@ -64,6 +88,9 @@ shift
 GENERICS=()
 PLUSARGS=()
 WAVE=0
+TAG=""
+DO_ELAB=1
+DO_SIM=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -81,6 +108,19 @@ while [ $# -gt 0 ]; do
             WAVE=1
             shift
             ;;
+        --tag)
+            if [ $# -lt 2 ]; then echo "ERROR: --tag requires a value" >&2; exit 1; fi
+            TAG="$2"
+            shift 2
+            ;;
+        --elab-only)
+            DO_SIM=0
+            shift
+            ;;
+        --sim-only)
+            DO_ELAB=0
+            shift
+            ;;
         *)
             echo "ERROR: unknown argument: $1" >&2
             usage
@@ -88,6 +128,16 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+if [ "$DO_ELAB" -eq 0 ] && [ "$DO_SIM" -eq 0 ]; then
+    echo "ERROR: --elab-only and --sim-only are mutually exclusive" >&2
+    exit 1
+fi
+
+SNAP="${TB}_snap"
+if [ -n "$TAG" ]; then
+    SNAP="${TB}_snap_${TAG}"
+fi
 
 TB_SRC_REPO="$REPO_ROOT/tb/$TB.v"
 if [ ! -f "$TB_SRC_REPO" ]; then
@@ -122,6 +172,8 @@ shopt -s nullglob
 RTL_FILES=(rtl/*.v)
 shopt -u nullglob
 
+if [ "$DO_ELAB" -eq 1 ]; then
+
 echo "== xvlog ==" | tee -a "$LOG"
 # NOTE: run.ps1 calls the .bat launchers (xvlog.bat) and works. The bash
 # wrappers (xvlog, a shell script) drop the leading slash of path arguments
@@ -138,7 +190,7 @@ if [ "$XVLOG_RC" -ne 0 ]; then
     exit 1
 fi
 
-XELAB_ARGS=(-L work --snapshot "${TB}_snap" "$TB" --timescale 1ns/1ps)
+XELAB_ARGS=(-L work --snapshot "$SNAP" "$TB" --timescale 1ns/1ps)
 # -generic_top NAME=VALUE and -testplusarg NAME=VALUE cannot be passed on the
 # command line here: the xelab/xsim launchers are .bat wrappers, and cmd.exe
 # splits an unquoted NAME=VALUE token on the '=' (the tool then reports
@@ -147,11 +199,11 @@ XELAB_ARGS=(-L work --snapshot "${TB}_snap" "$TB" --timescale 1ns/1ps)
 # file"), which is immune to cmd.exe tokenisation, so the options go through
 # a generated argument file instead.
 if [ ${#GENERICS[@]} -gt 0 ]; then
-    : > xelab_args.f
+    : > "xelab_args_${SNAP}.f"
     for g in "${GENERICS[@]}"; do
-        printf -- '-generic_top "%s"\n' "$g" >> xelab_args.f
+        printf -- '-generic_top "%s"\n' "$g" >> "xelab_args_${SNAP}.f"
     done
-    XELAB_ARGS+=(-f xelab_args.f)
+    XELAB_ARGS+=(-f "xelab_args_${SNAP}.f")
 fi
 if [ "$WAVE" -eq 1 ]; then
     XELAB_ARGS+=(--debug typical)
@@ -168,13 +220,26 @@ if [ "$XELAB_RC" -ne 0 ]; then
     exit 1
 fi
 
-XSIM_ARGS=("${TB}_snap" --runall)
+fi  # end DO_ELAB
+
+if [ "$DO_SIM" -eq 0 ]; then
+    cp -f "$LOG" "$REPO_WORK/sim.log"
+    echo "ELAB_ONLY_OK: snapshot $SNAP built in $WORK"
+    exit 0
+fi
+
+if [ ! -d "$WORK/xsim.dir/$SNAP" ]; then
+    echo "ERROR: snapshot '$SNAP' not found under $WORK/xsim.dir -- run once with --elab-only (same --tag and -g) first" >&2
+    exit 1
+fi
+
+XSIM_ARGS=("$SNAP" --runall)
 if [ ${#PLUSARGS[@]} -gt 0 ]; then
-    : > xsim_args.f
+    : > "xsim_args_${SNAP}.f"
     for p in "${PLUSARGS[@]}"; do
-        printf -- '-testplusarg "%s"\n' "${p#+}" >> xsim_args.f
+        printf -- '-testplusarg "%s"\n' "${p#+}" >> "xsim_args_${SNAP}.f"
     done
-    XSIM_ARGS+=(-f xsim_args.f)
+    XSIM_ARGS+=(-f "xsim_args_${SNAP}.f")
 fi
 if [ "$WAVE" -eq 1 ]; then
     XSIM_ARGS+=(-wdb "${TB}.wdb")
