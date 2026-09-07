@@ -13,6 +13,11 @@ module regfile (
     output wire [31:0] rdata2
 );
 
+    // ram_style: 32x32 with two asynchronous read ports is a distributed
+    // (LUT) RAM.  Without the attribute Vivado has been observed to pack
+    // it into a RAMB36, wasting a block RAM the memories need.
+    // Simulation-neutral: Verilog-2001 attributes are ignored by xsim.
+    (* ram_style = "distributed" *)
     reg [31:0] regs [0:31];
 
     assign rdata1 = (raddr1 == 5'd0) ? 32'b0 :

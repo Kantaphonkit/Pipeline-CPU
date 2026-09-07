@@ -11,6 +11,13 @@ module imem #(
     output reg  [31:0] inst
 );
 
+    // ram_style: force block-RAM (ROM) inference.  Without it Vivado
+    // collapses this sparsely-initialised array into LUT logic, which
+    // makes the whole synthesis result an artifact of the loaded image
+    // rather than a characterisation of the CPU.  The read below is
+    // registered, so the attribute is satisfiable.  Simulation-neutral:
+    // Verilog-2001 attributes are ignored by xsim.
+    (* ram_style = "block" *)
     reg [31:0] mem [0:1023];
 
     initial $readmemh(INIT, mem);

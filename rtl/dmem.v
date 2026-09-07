@@ -16,6 +16,9 @@ module dmem #(
     output wire [31:0] wmask_data     // store data masked to width, not shifted
 );
 
+    // ram_style: force block-RAM inference (registered read below, byte
+    // -lane writes -> byte-write-enable BRAM).  Simulation-neutral.
+    (* ram_style = "block" *)
     reg [31:0] mem [0:1023];
 
     integer init_i;
