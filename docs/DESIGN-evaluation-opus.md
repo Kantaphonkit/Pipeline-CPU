@@ -1,3 +1,15 @@
+> **HISTORICAL — superseded. Do not cite this document.**
+>
+> This is the 2026-09-06 expert evaluation of the *original* design plan
+> (`docs/DESIGN.pdf`), written before any RTL existed. It is kept only as a
+> record of why the project was scoped and re-planned the way it was: nearly
+> every blocker it raises (macOS/Icarus/GTKWave/Spike toolchain, no schedule,
+> no scope-cut list) was acted on and no longer describes this repo.
+>
+> **The current design document is [`docs/DESIGN.md`](DESIGN.md)**, which is
+> written against the implementation as built and is the authoritative
+> technical reference. `PROJECT-REQUIREMENTS.md` is the authoritative spec.
+
 # Evaluation: RISC-V RV32I Pipeline CPU Design Plan
 
 ## Verdict

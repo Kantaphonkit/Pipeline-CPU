@@ -1667,49 +1667,149 @@ value, and the cycle count is identical to the same program run with no
 interrupt asserted. Final architectural state: `x10 = 200` (the main loop's
 counter) and `x11 = 2` (the ISR's visit counter).
 
-### 11.5 Synthesis (Vivado 2026.1, xc7a35tcpg236-1, out-of-context, 100 MHz constraint, post place-and-route)
+### 11.5 Synthesis (Vivado 2026.1, xc7a35tcpg236-1, out-of-context, post place-and-route)
 
-| Design | LUT | FF | BRAM | LUT as memory | WNS | fmax |
-|---|---|---|---|---|---|---|
-| Base machine (forwarding, no bonuses) | 1440 | 734 | 2 | — | −2.75 ns | ≈ 78 MHz |
-| Full (BHT + interrupt) | 2173 | 960 | 1 | 556 | −1.39 ns | ≈ 88 MHz |
+*Re-measured 2026-09-07. Every number in this section is read out of
+`vivado/reports/` — see the note on the superseded measurement at the end.*
 
-fmax = 1 / (10 ns − WNS).
+| Design | Constraint | LUT | of which memory | FF | BRAM | WNS | TNS | Failing endpoints | fmax = 1/(T − WNS) |
+|---|---|---|---|---|---|---|---|---|---|
+| Base machine (`BHT_ENABLE = 0`) | 10.0 ns | 1245 | 44 | 689 | 2 | −2.483 ns | −771.0 ns | 423 / 2694 | 80.1 MHz |
+| Full (BHT + interrupt) | 10.0 ns | 1461 | 44 | 819 | 2 | −3.235 ns | −1341.7 ns | 555 / 2956 | 75.6 MHz |
+| Full (BHT + interrupt) | 12.5 ns | 1455 | 44 | 819 | 2 | −0.755 ns | −67.6 ns | 306 / 2956 | 75.4 MHz |
+| **Full (BHT + interrupt)** | **13.5 ns** | **1424** | **44** | **819** | **2** | **+0.052 ns** | **0.000 ns** | **0 / 2956** | **74.4 MHz (met)** |
 
-**Out-of-context.** The core's ports include roughly 360 trace and
-performance-counter bits, which exceed the 106 I/O pins the `cpg236` package
-offers, so synthesis has to run without I/O buffers (out-of-context). That is
-also the methodologically correct way to characterise a core that is not
-itself pinned out to a board — the timing and utilisation numbers describe the
-core's internal logic, not a particular top-level pinout.
+Reproduce with `vivado/synth.sh --impl [--period NS] [--generic BHT_ENABLE=0 --tag base]`.
 
-**Memory inference.** IMEM maps to one `RAMB36E1` in both designs (a ROM, initialised from the assembled hex image). DMEM maps to a second `RAMB36E1` with byte-write lanes in the base machine, but in the full design Vivado chose **distributed LUT RAM** for it instead (`Synth 8-5584: implemented as distributed LUT RAM ... the timing constraints suggest that the chosen mapping will yield better timing results`), which is why the block-RAM count drops from 2 to 1 while "LUT as memory" rises to 556 (about 512 LUTs for the 1024×32 DMEM plus the register file). That choice removes the block-RAM clock-to-output delay from the load path and is the main reason the full design closes timing 1.4 ns better than the base machine despite being larger. The register file infers as distributed RAM (`RAM32M`) in both; the 64×2-bit BHT is flip-flops.
+**Operating point.** The full design **closes setup timing at 13.5 ns —
+74 MHz** (`timing_13.5ns.txt`, WNS +0.052 ns, TNS 0, zero failing endpoints).
+100 MHz is not met (WNS −3.235 ns) and neither is 80 MHz (−0.755 ns). The
+three constraint points agree with each other to within 1.2 %: 1/(T − WNS)
+lands at 75.6, 75.4 and 74.4 MHz, which is the useful cross-check — the number
+is a property of the design, not of the constraint it was asked to meet.
+74 MHz is quoted as the operating point rather than 75.6 MHz because it is the
+one a run actually demonstrated by closing.
 
-**Critical path, full design (10.74 ns, 15 logic levels, 75 % routing):** the
-`EX/MEM` destination-register register (`rd_addr_q_reg`) through the
-forwarding/hazard compare logic and into a register-file read address — a
-match-bit comparison feeding the register file's own address decode, which is
-also the deepest path in the design because it fans out into the distributed
-RAM's address inputs. **Critical path, base machine** (12.1 ns, 67 % routing):
-DMEM's block-RAM read, through the byte-lane extension logic, through the
-write-back mux, into a forwarding mux — the load-to-use path is the base
-machine's own bottleneck, and it is a fundamentally different (and longer)
-path than the full design's, because the full design's forwarding compare
-logic wins the race once BHT and interrupt logic add enough LUT depth
-elsewhere to change synthesis's optimisation choices.
+**Out-of-context.** `cpu_top`'s ports include 361 commit-trace and
+performance-counter bits, far more than the 106 I/O pins the `cpg236` package
+offers, so synthesis runs `-mode out_of_context`: no I/O buffers, and the clock
+is not assigned to a BUFG. That is also the methodologically correct way to
+characterise a core that is not pinned out to a board — the numbers describe
+the core's logic, not a particular top-level pinout. The caveat it carries is
+in the hold discussion below.
 
-**The 100 MHz target is not met** at either configuration (WNS is negative in
-both rows). Two standard fixes are named as future work rather than attempted
-under the feature freeze:
+**Port constraints.** The trace and performance-counter outputs are
+observation-only: they exist so the self-checking testbenches can watch the
+pipeline (section 10) and on a real board would not be bonded out. Giving them
+a real output delay would invent a timing requirement that does not exist and
+would distort the reported critical path, so `constraints.xdc` declares them
+false paths — with a 0 ns output delay alongside, purely because Vivado's
+`check_timing` counts a port as constrained only if it carries an actual delay
+object and would otherwise keep listing all 361 as unconstrained. `rst`, `irq`
+and `done` are real I/O and are constrained (0 ns external delay:
+out-of-context synthesis has no board model to reference). `check_timing` is
+consequently clean — 0 unconstrained inputs, 0 unconstrained outputs, 0
+unconstrained internal endpoints — where the earlier runs reported 2 and 361.
+
+**Memory inference.** All three arrays map where they should, and this is
+checked rather than assumed: `vivado/reports/memory*.txt` is a
+`get_cells -hierarchical` dump of every memory primitive with its hierarchical
+path.
+
+| Array | Size | Maps to | Evidence |
+|---|---|---|---|
+| `u_imem/mem` | 1024 × 32 ROM | 1 × `RAMB36E1` (`u_imem/inst_reg`) | `memory.txt`; the read is registered, so the attribute is satisfiable |
+| `u_dmem/mem` | 1024 × 32 RAM | 1 × `RAMB36E1` (`u_dmem/mem_reg`) | Final Mapping Report: `1 K x 32(READ_FIRST)` / `1 K x 32(WRITE_FIRST)`, byte-write lanes |
+| `u_regfile/regs` | 32 × 32, 2 async read ports | 12 × `RAM32M` = 44 LUTs | Final Mapping Report: `Inference = User Attribute` |
+
+This required `(* ram_style *)` attributes on all three (`rtl/imem.v`,
+`rtl/dmem.v`, `rtl/regfile.v`). Left to itself Vivado made the opposite choice
+on every one of them: it constant-folded the sparsely-initialised instruction
+ROM into LUT logic and dropped it from the netlist entirely, put the data
+memory in 512 `RAMS64E` distributed-RAM cells, and packed the register file —
+the one array that genuinely wants LUT RAM, because two asynchronous read ports
+are exactly what distributed RAM provides and block RAM does not — into the
+design's only block RAM. Vivado also warns (`Synth 8-7052`) that neither block
+RAM could absorb an optional output register, which is accurate: both reads
+feed combinational logic in the same stage, and that shows up directly in the
+critical path below.
+
+**Critical path (full design, 10 ns constraint): 12.982 ns, 15 logic levels,
+65 % routing.** From `u_dmem/mem_reg/CLKBWRCLK` to `u_pc/pc_q_reg[31]/CE` —
+the load-to-branch path:
+
+1. DMEM block-RAM clock-to-output, `CLKBWRCLK → DOBDO`: **2.454 ns**, 19 % of
+   the path in one hop and the single largest term;
+2. the byte-lane select and sign/zero extension (2 × LUT6), still in MEM;
+3. the MEM → EX forwarding mux into the EX operand;
+4. the branch comparator's carry chain (3 × CARRY4) producing `branch_cond`;
+5. the redirect / flush / stall reduction;
+6. into the PC register's clock enable.
+
+That is the deepest combinational chain in the machine: a load result reaching
+the branch comparator through forwarding within one cycle, and then deciding
+the next PC. At 13.5 ns the same source drives `u_imem/inst_reg/ENARDEN`
+instead — the other consumer of the same stall term — for 12.921 ns over 17
+levels. Note that step 1 did not exist in the earlier measurement: with DMEM in
+distributed RAM the read was roughly 1 ns, and the block RAM's 2.454 ns is most
+of the difference between the old headline number and this one. Mapping the
+memories correctly costs fmax; it also makes the number mean something.
+
+**Hold.** Never examined before this measurement, and now reported explicitly
+because a post-route hold violation would be a real bug rather than a missed
+target. `WHS = −0.120 ns` across 483 failing endpoints at every constraint
+point — hold is period-independent, which is the first clue about what it is.
+`hold.txt` lists the twenty worst hold paths and **every one of them starts at
+the `rst` input port** (fanout 485, matching the 483 failing endpoints).
+`hold_reg2reg.txt` — the same analysis restricted to register-to-register paths
+— is **MET at +0.071 ns** (full @ 10 ns), +0.112 ns (full @ 13.5 ns) and
++0.119 ns (base machine). **There are no internal hold violations.**
+
+The `rst` violation is an artifact of the out-of-context flow, and Vivado says
+so itself in the same run: `[Timing 38-242] The property HD.CLK_SRC of clock
+port "clk" is not set. In out-of-context mode, this prevents timing estimation
+for clock delay/skew`, and `[Route 35-198] Port "rst" does not have an
+associated HD.PARTPIN_LOCS ... timing analysis to/from this port will not be
+accurate`. Concretely: with no BUFG the destination registers see the clock
+after 0.973 ns of general routing, while `rst` is declared to arrive with 0 ns
+input delay, so the tool sees data arriving 0.973 ns "early" relative to a
+clock edge that a real global buffer would have delayed identically at both
+ends. In a top-level design with the clock on a BUFG, or with `HD.CLK_SRC` and
+`HD.PARTPIN_LOCS` set, the check disappears. It is not evidence of a design
+problem, and it is stated here rather than omitted because the alternative —
+quoting WNS and saying nothing about WHS — is exactly what let it go
+unexamined.
+
+**The 100 MHz target is not met.** Two standard fixes are named as future work
+rather than attempted under the feature freeze; the re-measurement sharpens the
+ordering, because the critical path now demonstrably begins at the DMEM block
+RAM:
 
 1. **Register the DMEM output lane-extension into WB** — move the byte-lane
-   selection and sign/zero extension currently combinational in MEM so it
-   happens after the MEM/WB register instead of before it, shortening the base
-   machine's critical path by one combinational stage.
+   selection and sign/zero extension out of MEM and behind the MEM/WB register.
+   This is now clearly the first fix rather than one of two equals: it takes
+   steps 2–3 of the path above out of the same cycle as the 2.454 ns block-RAM
+   read. It reshapes the load-use interlock, so it is a datapath change, not a
+   local one.
 2. **Pipeline the forwarding compare** by precomputing the `rs == rd` match
-   bits in ID (where the register addresses are already available a cycle
-   earlier) instead of comparing them combinationally in EX, shortening the
-   full design's critical path.
+   bits in ID, where the register addresses are available a cycle earlier,
+   instead of comparing them combinationally in EX.
+
+A third option is specific to the memories: both `Synth 8-7052` messages say
+the block RAMs could absorb an output register if one were provided, which
+would turn step 1 into a clock-to-out of roughly 0.4 ns at the cost of one
+extra cycle of memory latency — a pipeline-depth change, and therefore out of
+scope under the freeze.
 
 Neither is implemented; both are within the datapath's existing structure
 (section 5) and would not change any instruction's architectural behaviour.
+
+> **Superseded measurement.** Before 2026-09-07 this section reported 2173 LUT
+> / 960 FF / 1 BRAM / WNS −1.39 ns → "fmax ≈ 88 MHz", and claimed IMEM was in
+> block RAM, that DMEM had been moved to LUT RAM for timing, and that the
+> register file was distributed. All four were wrong, and for one root cause:
+> synthesis initialised IMEM with `asm/smoke.hex`, a ~60-instruction bring-up
+> program, and with no `ram_style` attribute Vivado optimised the instruction
+> memory out of the design altogether. The single block RAM in that netlist was
+> the register file. Those numbers characterised the loaded program, not the
+> CPU, and are recorded here only so the change is traceable.
