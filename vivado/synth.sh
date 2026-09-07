@@ -8,6 +8,7 @@
 #
 # Usage:
 #   vivado/synth.sh [--impl] [--worktree] [--hex PATH] [--period NS]
+#                   [--generic NAME=VALUE ...] [--tag NAME]
 #
 #   --impl       also run opt_design/place_design/route_design and re-emit
 #                timing/utilization reports post-implementation (slow).
@@ -24,6 +25,14 @@
 #                A non-default period suffixes the report filenames, e.g.
 #                --period 12.5 -> vivado/reports/timing_12.5ns.txt, so the
 #                100 MHz and 80 MHz runs can both be kept.
+#   --generic NAME=VALUE
+#                extra Verilog parameter for synth_design (repeatable), to
+#                characterise a configuration other than the default, e.g.
+#                --generic BHT_ENABLE=0 for the base machine. The IMEM image
+#                goes through --hex, not through this.
+#   --tag NAME   extra report-filename suffix, so two runs differing only in
+#                their generics keep separate reports
+#                (--generic BHT_ENABLE=0 --tag base -> timing_base.txt).
 #
 # Vivado bin dir overridable via $VIVADO_BIN (default matches CLAUDE.md /
 # sim/run.sh: D:/AMDDesigntools/2026.1/Vivado/bin).
@@ -73,6 +82,8 @@ IMPL=0
 WORKTREE=0
 HEX="asm/prog/bpred.hex"
 PERIOD="10.000"
+TAG=""
+GENERICS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --impl)
@@ -93,6 +104,16 @@ while [ $# -gt 0 ]; do
             PERIOD="$2"
             shift 2
             ;;
+        --generic)
+            if [ $# -lt 2 ]; then echo "ERROR: --generic requires NAME=VALUE" >&2; exit 1; fi
+            GENERICS+=("$2")
+            shift 2
+            ;;
+        --tag)
+            if [ $# -lt 2 ]; then echo "ERROR: --tag requires a name" >&2; exit 1; fi
+            TAG="$2"
+            shift 2
+            ;;
         *)
             echo "ERROR: unknown argument: $1" >&2
             usage
@@ -106,6 +127,9 @@ done
 SUFFIX=""
 if [ "$PERIOD" != "10.000" ] && [ "$PERIOD" != "10" ]; then
     SUFFIX="_${PERIOD}ns"
+fi
+if [ -n "$TAG" ]; then
+    SUFFIX="${SUFFIX}_${TAG}"
 fi
 
 SHADOW="$(cygpath -u "${LOCALAPPDATA:-$TEMP}")/pcpu_synth"
@@ -140,10 +164,13 @@ cp -f "$REPO_ROOT/vivado/constraints.xdc" "$SHADOW/constraints.xdc"
 cp -f "$REPO_ROOT/vivado/synth.tcl" "$SHADOW/synth.tcl"
 
 cd "$SHADOW" || exit 1
-rm -f synth.log synth.jou utilization.txt timing.txt clocks.txt memory.txt constraints_gen.xdc
+rm -f synth.log synth.jou utilization.txt timing.txt clocks.txt memory.txt hold.txt hold_reg2reg.txt constraints_gen.xdc
 
 VIVADO_ARGS=(-mode batch -source synth.tcl -log synth.log -journal synth.jou
              -tclargs --hex "$HEX" --period "$PERIOD")
+for g in "${GENERICS[@]}"; do
+    VIVADO_ARGS+=(--generic "$g")
+done
 if [ "$IMPL" -eq 1 ]; then
     VIVADO_ARGS+=(--impl)
 fi
@@ -155,7 +182,7 @@ VIVADO_RC=$?
 REPORTS_DIR="$REPO_ROOT/vivado/reports"
 mkdir -p "$REPORTS_DIR"
 
-for f in synth.log synth.jou utilization.txt timing.txt clocks.txt memory.txt; do
+for f in synth.log synth.jou utilization.txt timing.txt clocks.txt memory.txt hold.txt hold_reg2reg.txt; do
     if [ -f "$SHADOW/$f" ]; then
         base="${f%.*}"
         ext="${f##*.}"

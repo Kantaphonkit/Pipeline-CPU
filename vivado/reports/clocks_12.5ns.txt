@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2026 Advanced Micro Devices, Inc. All Rights Reserved.
 ---------------------------------------------------------------------------------------------------------------------------------------------
 | Tool Version : Vivado v.2026.1 (win64) Build 6511674 Tue Jun 16 11:02:23 MDT 2026
-| Date         : Mon Sep  7 15:08:42 2026
+| Date         : Mon Sep  7 14:54:41 2026
 | Host         : DESKTOP-R55NVQR running 64-bit major release  (build 9200)
 | Command      : report_clocks -file clocks.txt
 | Design       : cpu_top
@@ -23,7 +23,7 @@ Attributes
   S: Pin phase-shifted with Latency mode
 
 Clock  Period(ns)  Waveform(ns)   Attributes  Sources
-clk    10.000      {0.000 5.000}  P           {clk}
+clk    12.500      {0.000 6.250}  P           {clk}
 
 
 ====================================================

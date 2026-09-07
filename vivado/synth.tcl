@@ -28,6 +28,12 @@
 # --hex <path>  IMEM image, relative to the shadow CWD.
 #               Default asm/prog/bpred.hex.
 # --period <ns> clock period to constrain to. Default 10.000 (100 MHz).
+# --generic N=V additional -generic for synth_design (repeatable). Used to
+#               characterise a configuration other than the default one, e.g.
+#               --generic BHT_ENABLE=0 for the base machine. IMEM_INIT is
+#               always supplied from --hex and must not be passed here.
+# --tag <name>  extra report-filename suffix, so two runs that differ only in
+#               their generics do not overwrite each other's reports.
 #
 # --- IMEM image: why NOT smoke.hex ------------------------------------------
 # The committed rtl/cpu_top.v defaults IMEM_INIT to the bare filename
@@ -51,21 +57,25 @@
 #
 # Produces (written to CWD, i.e. the shadow dir; synth.sh/synth.ps1 copy them
 # back to vivado/reports/):
-#   utilization.txt, timing.txt, clocks.txt, memory.txt
+#   utilization.txt, timing.txt, clocks.txt, memory.txt, hold.txt,
+#   hold_reg2reg.txt
 
 set part "xc7a35tcpg236-1"
 
 set impl 0
 set hex "asm/prog/bpred.hex"
 set period 10.000
+set extra_generics {}
 
 if {[info exists argv]} {
     for {set i 0} {$i < [llength $argv]} {incr i} {
         set a [lindex $argv $i]
         switch -- $a {
             --impl   { set impl 1 }
-            --hex    { incr i ; set hex [lindex $argv $i] }
-            --period { incr i ; set period [lindex $argv $i] }
+            --hex     { incr i ; set hex [lindex $argv $i] }
+            --period  { incr i ; set period [lindex $argv $i] }
+            --generic { incr i ; lappend extra_generics [lindex $argv $i] }
+            --tag     { incr i }
             default  { puts "WARNING: synth.tcl: ignoring unknown argument '$a'" }
         }
     }
@@ -114,8 +124,17 @@ if {[file exists $xdc]} {
     puts "WARNING: constraints.xdc not found in [pwd] -- synthesizing without timing constraints."
 }
 
-puts "== synth_design: part=$part IMEM_INIT=$hex period=[format %.3f $period] ns impl=$impl =="
-synth_design -top cpu_top -mode out_of_context -part $part -generic IMEM_INIT=$hex
+set generic_args [list -generic IMEM_INIT=$hex]
+foreach g $extra_generics {
+    if {[string first "IMEM_INIT" $g] == 0} {
+        puts "ERROR: pass the IMEM image with --hex, not --generic ($g)."
+        exit 1
+    }
+    lappend generic_args -generic $g
+}
+
+puts "== synth_design: part=$part period=[format %.3f $period] ns impl=$impl generics=$generic_args =="
+synth_design -top cpu_top -mode out_of_context -part $part {*}$generic_args
 
 # ---- memory inference evidence ---------------------------------------------
 # report_utilization's "Memory" table gives the totals; this dumps the actual
@@ -136,6 +155,19 @@ proc report_memory_cells {fname stage} {
     close $fh
 }
 
+# ---- hold / min-delay evidence ---------------------------------------------
+# Until 2026-09-07 nothing in this project had ever looked at hold (WHS/THS);
+# only WNS was quoted. report_timing_summary reports the single worst hold
+# path, which is not enough to tell an I/O-boundary artifact (an input port
+# with no PARTPIN placement and, out-of-context, no clock buffer to balance
+# the destination clock delay) from a genuine register-to-register hold
+# violation -- the second kind is a real bug, the first is not. So both are
+# reported separately.
+proc report_hold {suffix} {
+    report_timing -delay_type min -max_paths 20 -file "hold${suffix}.txt"
+    report_timing -delay_type min -max_paths 10         -from [all_registers] -to [all_registers]         -file "hold_reg2reg${suffix}.txt"
+}
+
 report_utilization -file utilization.txt
 report_timing_summary -file timing.txt
 report_clocks -file clocks.txt
@@ -148,6 +180,10 @@ if {$impl} {
     report_timing_summary -file timing.txt
     report_utilization -file utilization.txt
     report_memory_cells memory.txt "post-route"
+    report_hold ""
+}
+if {!$impl} {
+    report_hold ""
 }
 
 puts "SYNTH_TCL_DONE"

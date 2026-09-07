@@ -11,6 +11,7 @@
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File vivado/synth.ps1 [-Impl] [-Worktree]
 #                                                              [-Hex PATH] [-Period NS]
+#                                                              [-Generic NAME=VALUE,...] [-Tag NAME]
 #
 #   -Impl       also run opt_design/place_design/route_design and re-emit
 #               timing/utilization reports post-implementation (slow).
@@ -22,6 +23,11 @@
 #   -Period NS  clock period to constrain to (default 10.000 = 100 MHz). A
 #               non-default period suffixes the report filenames, e.g.
 #               -Period 12.5 -> vivado/reports/timing_12.5ns.txt.
+#   -Generic    extra Verilog parameters for synth_design, e.g.
+#               -Generic BHT_ENABLE=0 for the base machine. The IMEM image
+#               goes through -Hex, not through this.
+#   -Tag NAME   extra report-filename suffix, so two runs differing only in
+#               their generics keep separate reports.
 #
 # $env:VIVADO_BIN overrides the Vivado bin directory (default matches
 # CLAUDE.md / sim/run.ps1: D:/AMDDesigntools/2026.1/Vivado/bin).
@@ -33,7 +39,9 @@ param(
     [switch]$Impl,
     [switch]$Worktree,
     [string]$Hex = "asm/prog/bpred.hex",
-    [string]$Period = "10.000"
+    [string]$Period = "10.000",
+    [string[]]$Generic = @(),
+    [string]$Tag = ""
 )
 
 # Reports are suffixed for any non-default period so a met-constraint run does
@@ -41,6 +49,9 @@ param(
 $Suffix = ""
 if (($Period -ne "10.000") -and ($Period -ne "10")) {
     $Suffix = "_${Period}ns"
+}
+if ($Tag -ne "") {
+    $Suffix = "${Suffix}_${Tag}"
 }
 # [char]92 is a backslash; written this way to keep the escaping unambiguous.
 $HexWin = $Hex.Replace("/", [string][char]92)
@@ -125,13 +136,16 @@ Copy-Item -Path (Join-Path $RepoRoot "vivado\synth.tcl") -Destination (Join-Path
 
 Push-Location $Shadow
 
-foreach ($f in @("synth.log", "synth.jou", "utilization.txt", "timing.txt", "clocks.txt", "memory.txt", "constraints_gen.xdc")) {
+foreach ($f in @("synth.log", "synth.jou", "utilization.txt", "timing.txt", "clocks.txt", "memory.txt", "hold.txt", "hold_reg2reg.txt", "constraints_gen.xdc")) {
     if (Test-Path $f) { Remove-Item -Force $f }
 }
 
 $vivadoExe = Join-Path $VivadoBin "vivado.bat"
 $vivadoArgs = @("-mode", "batch", "-source", "synth.tcl", "-log", "synth.log", "-journal", "synth.jou",
                 "-tclargs", "--hex", $Hex, "--period", $Period)
+foreach ($g in $Generic) {
+    $vivadoArgs += @("--generic", $g)
+}
 if ($Impl) {
     $vivadoArgs += "--impl"
 }
@@ -145,7 +159,7 @@ Pop-Location
 $reportsDir = Join-Path $RepoRoot "vivado\reports"
 New-Item -ItemType Directory -Force -Path $reportsDir | Out-Null
 
-foreach ($f in @("synth.log", "synth.jou", "utilization.txt", "timing.txt", "clocks.txt", "memory.txt")) {
+foreach ($f in @("synth.log", "synth.jou", "utilization.txt", "timing.txt", "clocks.txt", "memory.txt", "hold.txt", "hold_reg2reg.txt")) {
     $src = Join-Path $Shadow $f
     if (Test-Path $src) {
         $base = [System.IO.Path]::GetFileNameWithoutExtension($f)
