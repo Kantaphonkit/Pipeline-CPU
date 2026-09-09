@@ -31,3 +31,6 @@ __pycache__/
 *.pyc
 
 # Fixtures (asm/*.hex) are committed on purpose — do NOT ignore *.hex here.
+
+# macOS
+.DS_Store

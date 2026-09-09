@@ -1740,8 +1740,12 @@ the load-to-branch path:
 
 1. DMEM block-RAM clock-to-output, `CLKBWRCLK → DOBDO`: **2.454 ns**, 19 % of
    the path in one hop and the single largest term;
-2. the byte-lane select and sign/zero extension (2 × LUT6), still in MEM;
-3. the MEM → EX forwarding mux into the EX operand;
+2. the byte-lane select and sign/zero extension of the load result (2 × LUT6).
+   `dmem.v` registers the memory word on the MEM clock edge and the extension is
+   combinational on that registered value, so this logic belongs to WB;
+3. the MEM/WB → EX forwarding mux, delivering that load result to a dependent
+   branch. The EX/MEM path cannot serve a load — it carries the ALU result,
+   which for a load is the effective address (section 6.1);
 4. the branch comparator's carry chain (3 × CARRY4) producing `branch_cond`;
 5. the redirect / flush / stall reduction;
 6. into the PC register's clock enable.

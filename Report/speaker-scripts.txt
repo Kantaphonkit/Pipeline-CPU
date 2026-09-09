@@ -1,0 +1,639 @@
+RV32I PIPELINE CPU - PROJECT PROPOSAL
+SPEAKER SCRIPTS
+
+20 main slides, 3 appendix slides, 3 speakers, 15 minutes. Cues marked [RIGHT]
+are build steps in the HTML deck - press the arrow key.
+
+Twenty main slides, three appendix slides, three speakers, fifteen minutes.
+Written against the proposal version of the deck. Say these in your own words;
+the numbers and the technical claims are the parts that must not drift.
+
+DECKS. rv32i-midterm-deck.html is the primary deck and has layered builds —
+the arrow key reveals one idea at a time, and the cues below say when to
+press. Every press is marked [RIGHT]. RV32I Pipeline Midterm.pptx is the same
+content flattened, for a machine without a browser.
+
+TIME SPLIT. Speaker 1 carries eight slides because the proposal framing — the
+objective, the design justification and the deliverables — all sit in that
+section. The split below is deliberately uneven and still totals fifteen
+minutes.
+
+  Speaker      Slides  Time
+  -----------  ------  -------------
+  1 — Design   1–8     5:45
+  2 — Coding   9–14    4:45
+  3 — Testing  15–20   4:30
+  Anyone       A1–A3   only if asked
+
+BEFORE YOU PRESENT: replace [ name ] on slides 1, 3, 9 and 15, and paste the
+two screenshots into slides 17 and 19.
+
+------------------------------------------------------------------------------
+
+==============================================================================
+SPEAKER 1 — DESIGN · 5:45
+==============================================================================
+
+Slide 1 — Title · 0:20
+----------------------
+
+    Good morning. We're proposing a five-stage pipelined CPU implementing
+    the RISC-V RV32I instruction set, written in Verilog and verified in
+    Vivado.
+
+    Three of us. I own the design, [name] owns the RTL and the toolchain,
+    [name] owns verification and measurement.
+
+Point at the coloured blocks. "Those five colours are the pipeline stages and
+they're used consistently throughout. The three underneath are the bypass
+network, the interlock, and a flush."
+
+Slide 2 — Objective and success criteria · 0:55
+-----------------------------------------------
+
+    Here's the task, verbatim. Design a pipelined CPU with more than
+    sixteen instructions, implement it in Verilog HDL, and use the
+    simulation tools to show its function and its performance. Bonus marks
+    for interrupts, cache and branch prediction.
+
+    What we commit to deliver is on the top right. A five-stage in-order
+    RV32I pipeline with forty-six encodings, full forwarding, a load-use
+    interlock and flush-based recovery. Two of the three bonuses — branch
+    prediction and interrupts — each built so it can be switched off,
+    because a feature you can't disable is a feature you can't measure. An
+    assembler and an independent reference model, because the tool the
+    brief names cannot execute this instruction set. And the evidence: a
+    self-checking test suite, a design document, and a synthesis report on
+    a named part.
+
+    Below that is how we'll know it's done. Four criteria. Correctness
+    checked against an independent implementation, not against our own
+    expectations. Function shown in simulation, with every test stating
+    its own pass or fail. Performance measured by switching a feature off
+    and re-running the same programs — a number with no baseline proves
+    nothing. And an fmax and utilisation figure with the critical path
+    identified.
+
+    Two things are explicitly out of scope. No FPGA board, because the
+    brief asks for simulation. And no instruction cache — the next slide
+    but one says why.
+
+    [RIGHT] And I should be straight with you about where this proposal
+    stands. We're past proposing it on paper. A working prototype already
+    meets every criterion on this slide, and the rest of the talk is the
+    evidence.
+
+Slide 3 — Design: my work · 0:40
+--------------------------------
+
+    My job was to produce the specification the RTL was written against,
+    before any Verilog existed.
+
+    Six areas. The five-stage structure and what every pipeline register
+    carries. The instruction subset and all six immediate formats. The
+    hazard rules — what forwards, what stalls, what gets flushed. The
+    memory subsystem, sizes, byte lanes and reset. The trap semantics. And
+    reading every RTL module against the spec before it was committed.
+
+    The number I'd point to is the control truth table: forty-six
+    instructions, twenty-two control signals each. It's in the design
+    document, and it's GENERATED from the same source that generates the
+    decoder's simulation vectors. So the document and the test cannot
+    drift apart. Change the decode and both move together, or the build
+    fails.
+
+Slide 4 — Scope · 0:30
+----------------------
+
+    The brief asks for more than sixteen instructions. We implement forty-
+    six encodings: thirty-seven core RV32I plus nine system instructions.
+
+    [RIGHT] Ten register-register operations, nine immediate arithmetic,
+    five loads, three stores, six branches, two upper-immediate, two
+    jumps. Then the nine system encodings — the six CSR instructions,
+    ecall, ebreak and mret. Those exist because of the interrupt bonus.
+
+    One detail: RV32I has no halt instruction, so we use ebreak as the
+    simulation halt. When it retires it raises a done flag and the
+    testbench stops.
+
+Slide 5 — Design choices · 0:50
+-------------------------------
+
+    Eight decisions, each shown with the alternative we rejected.
+
+    RISC-V rather than MIPS, because it's a clean orthogonal encoding we
+    could write our own assembler and reference model for.
+
+    Five stages rather than single-cycle or something deeper, because it's
+    the shallowest design that still exposes all three hazard classes.
+    That's the point of the exercise.
+
+    jal resolved in decode and branches in execute, rather than everything
+    in one stage. jal needs no register value, so resolving it early costs
+    nothing. A branch needs a comparison, and doing that in execute keeps
+    it off the decode path.
+
+    The two bonuses we took are both cheap in area and both produce a
+    number we can report.
+
+    [RIGHT] And the one we cut, which is the highlighted row. An
+    instruction cache sitting behind a single-cycle memory would make a
+    hit and a miss cost exactly the same, so CPI would not move at all.
+    And our entire test suite fits in two kilobytes, so the hit rate would
+    read about ninety-nine percent on every program we ran. It's designed
+    and written up in the report. We didn't build it, and that was a
+    measurement argument, not a schedule one.
+
+    Last two rows: our own reference model, because Mars executes MIPS and
+    cannot check RISC-V. And simulation plus a synthesis report rather
+    than a board, because the brief asks for simulation and synthesis
+    still gives us fmax without board bring-up risk.
+
+Slide 6 — Datapath · 1:15
+-------------------------
+
+Four builds. This is the architecture slide — do not rush it.
+
+    This is the datapath we're proposing. Let me build it up.
+
+    [STEP 1] Five stages. Fetch reads instruction memory and looks up the
+    branch predictor. Decode runs the control unit, generates the
+    immediate and reads the register file. Execute has the ALU, the branch
+    comparator and the CSR file. Memory is the data memory. Write-back
+    extends the load, picks the result and writes the register file.
+
+    [RIGHT] Between every pair of stages is an explicit pipeline register,
+    each with a stall input and a flush input. That matters, because it
+    means the hazard logic plugs in without modifying the datapath at all.
+
+    [RIGHT] Two forwarding paths, both landing back in Execute. One from
+    the Execute-Memory boundary, one instruction ahead. One from Memory-
+    Writeback, two ahead, and that's the path that carries load data. When
+    both match, the first wins — [name] will explain why.
+
+    [RIGHT] And the redirects. A jal resolves in decode and costs one
+    bubble. Branches, jalr, traps and mret resolve in execute and cost
+    two. The dashed violet line is the load-use interlock.
+
+    Memory is Harvard — separate four-kilobyte instruction and data arrays
+    — so fetch and memory access never contend.
+
+Slide 7 — What already works · 0:25
+-----------------------------------
+
+    Briefly, the evidence that this plan is achievable, because it's
+    already been done once.
+
+    Design documented. Nineteen Verilog modules running all forty-six
+    encodings. Both bonuses working. Every test suite green at all four
+    build configurations. Placed and routed, with setup timing met at
+    seventy-four megahertz on the target part.
+
+    The specification came first and the implementation followed it. That
+    order is why the schedule on the next slide is credible rather than
+    optimistic.
+
+Slide 8 — Deliverables, owners, milestones and risk · 0:50
+----------------------------------------------------------
+
+    Seven deliverables, each with exactly one owner and a state.
+
+    The design document, the RTL, the assembler and reference model, and
+    the test suite are complete. Performance measurements are preliminary.
+    The synthesis report has one run left. The demo lands on the
+    sixteenth.
+
+    Milestones on the right. Timing work on the eleventh and twelfth, with
+    a full regression after each change. Final synthesis on the thirteenth
+    and fourteenth. Feature freeze on the fifteenth — bugfix and
+    measurement only after that. Rehearsal on the sixteenth. Demo on the
+    seventeenth.
+
+    Then three risks, each with what we actually do about it. If the
+    timing work doesn't close cleanly by the fourteenth, we freeze on the
+    seventy-four megahertz build that's already verified, rather than ship
+    something faster we haven't tested. One of those timing changes moves
+    when a load result becomes available, so it can shift our cycle counts
+    — which is why every performance figure gets re-measured after the
+    freeze, not before. And if the instructor requires the older Vivado,
+    the RTL is plain Verilog-2001 with no vendor IP, and we commit a
+    project-generation script rather than a version-locked project file.
+
+    [RIGHT] Every deliverable has exactly one owner, and cross-review is
+    by reading each other's work rather than silent edits.
+
+    [Name] will take you through the implementation.
+
+------------------------------------------------------------------------------
+
+==============================================================================
+SPEAKER 2 — CODING · 4:45
+==============================================================================
+
+Slide 9 — Coding: my work · 0:40
+--------------------------------
+
+    Thanks. I own all the RTL, and also the toolchain — and the toolchain
+    is the part that's less obvious, so let me start there.
+
+    The brief names Mars as the simulator. Mars executes MIPS. We're
+    building a RISC-V machine, so Mars cannot assemble our programs and
+    cannot tell us whether our CPU is right. There was no reference to
+    check against, so I wrote one.
+
+    An assembler, about eight hundred and sixty lines, two passes, all six
+    instruction formats. And a reference model — an instruction set
+    simulator in Python, about five hundred and ninety lines, which runs
+    the same program and prints what every instruction committed.
+
+    Those two were cross-validated against each other BEFORE any Verilog
+    existed. So by the time the RTL needed checking, the oracle was
+    already trustworthy.
+
+Slide 10 — Forwarding · 0:55
+----------------------------
+
+    Data hazards. An instruction reads its registers in decode, but the
+    instructions ahead of it haven't written back yet.
+
+    [STEP 1] Distance one: the producer is in memory. Its result already
+    exists at the Execute-Memory boundary, so we forward it straight into
+    the ALU input.
+
+    [RIGHT] Distance two: the producer is in write-back. That's the
+    Memory-Writeback path, and it's also the path that carries load data,
+    which matters in a minute.
+
+    There's a third distance handled inside the register file — a write-
+    to-read internal bypass, so if write-back is writing the register
+    decode is reading in the same cycle, decode sees the new value.
+
+    [RIGHT] And the rule that catches people out. When both older
+    instructions write the same register, Execute-Memory wins, because
+    it's the newer writer. Check Memory-Writeback first and you resurrect
+    a stale value. Our hazard test does exactly that: set x5 to a hundred,
+    add one, then read it. It must see a hundred and one while a hundred
+    is still sitting in the older register.
+
+    One more: we never forward from x0. A producer whose destination is x0
+    wrote nothing, so forwarding it would make x0 read non-zero for one
+    instruction.
+
+Slide 11 — Stall and flush · 0:50
+---------------------------------
+
+    Two hazards forwarding cannot fix.
+
+    [STEP 1] A load. Its data doesn't exist until the end of the memory
+    stage, so an instruction one slot behind it can't be served by any
+    bypass. It waits one cycle. The violet cells are held — the program
+    counter and the fetch register freeze, and a bubble goes into execute.
+    One cycle is always enough, because by then the load is in write-back
+    and the second forwarding path works.
+
+    [RIGHT] Control hazards. A conditional branch resolves in execute, so
+    by the time we know it's taken, two instructions behind it have
+    already been fetched. Both are killed. They never write a register,
+    never write memory, and never count as retired.
+
+    [RIGHT] Costs on the strip: one cycle for a load-use, one bubble for
+    jal, two for a taken branch or a jalr, two for a trap or an mret.
+
+    And one rule that's easy to get wrong: a redirect always overrides a
+    stall. The instruction that raised the stall is being killed anyway,
+    so waiting for it would deadlock the redirect.
+
+Slide 12 — Branch prediction · 0:55
+-----------------------------------
+
+    First bonus. Sixty-four entries of two-bit saturating counters,
+    indexed by bits two to seven of the PC.
+
+    The state machine is standard. Taken moves right, not-taken moves
+    left, both ends saturate, and the prediction is just the top bit. We
+    reset to weakly-not-taken, so a branch we've never seen behaves
+    exactly like the machine with no predictor.
+
+    [RIGHT] Now the honest part — the cost table.
+
+    Predict not-taken and it isn't taken: zero bubbles, because the fall-
+    through was already being fetched. Predict taken and it is taken: ONE
+    bubble, not zero. A mispredict in either direction: two.
+
+    That one-bubble cost is real and we don't hide it. There's no branch
+    target buffer, because the target is just PC plus the branch immediate
+    and decode already computes it. Dropping the target buffer saves a
+    tagged memory and costs one cycle on a correct prediction.
+
+    [RIGHT] So: looked up in fetch, carried through the pipeline register,
+    acted on in decode, resolved and updated in execute.
+
+    Which means this predictor can only win on branches that are actually
+    taken. A correctly predicted not-taken branch already cost nothing.
+
+Slide 13 — Interrupts · 0:50
+----------------------------
+
+    Second bonus. Machine-mode interrupts with the minimum CSR set:
+    mstatus, mie, mtvec, mepc and mcause, the six CSR instructions, and
+    mret.
+
+    [STEP 1] The trap is taken in execute, and this timeline shows why
+    that matters. The instruction in execute when the interrupt arrives is
+    SQUASHED — it never retires and never appears in the commit trace. The
+    two behind it are killed. The two ahead are already past execute, so
+    they do retire.
+
+    [RIGHT] At that point mepc gets the PC of the squashed instruction,
+    mcause gets the external interrupt code, the enable bit is saved into
+    MPIE and cleared, and the PC goes to mtvec.
+
+    [RIGHT] Now the detail I'd most like you to take away, because it's
+    the classic trap-handling bug.
+
+    On an ecall, mepc points AT the ecall, which hasn't completed. The
+    handler MUST add four before returning, or it re-executes forever.
+
+    On an interrupt, mepc points at an instruction that NEVER EXECUTED.
+    The handler must NOT add four — mret re-runs it. Same register,
+    opposite rule.
+
+    Last thing: the interrupt input is a level, not a pulse, and it's
+    qualified by the enable bits. So a request arriving while the handler
+    runs isn't lost. It's taken as soon as mret restores the enable.
+
+Slide 14 — Synthesis · 0:35
+---------------------------
+
+    Synthesis, on an Artix-7, placed and routed.
+
+    Fourteen hundred and sixty-one LUTs, eight hundred and nineteen flip-
+    flops, two block RAMs. About seven percent of the device.
+
+    [RIGHT] The sweep. At ten nanoseconds we're three short. At twelve and
+    a half still slightly short. At thirteen and a half we close, with
+    positive slack and zero failing endpoints. Seventy-four megahertz. The
+    figure is consistent across all three points to about one percent,
+    which is the useful check — it's a property of the design, not of the
+    constraint we asked for.
+
+    [RIGHT] The critical path is a load feeding a branch. The block RAM
+    output alone is two and a half nanoseconds. Then lane extension in
+    write-back, the forwarding mux, the branch comparator, and the
+    redirect into the program counter's enable.
+
+    Seventy-four megahertz is measured, not estimated, and we know exactly
+    what limits it. That's what makes the two fixes a scheduled task
+    rather than a hope.
+
+    [Name] will show you how all of this is verified.
+
+------------------------------------------------------------------------------
+
+==============================================================================
+SPEAKER 3 — TESTING · 4:30
+==============================================================================
+
+Slide 15 — Testing: my work · 0:40
+----------------------------------
+
+    Thanks. My job is to prove the thing works, and then to measure it.
+
+    The principle I'd lead with: nothing in this project is judged by
+    looking at a waveform. Every test states its own verdict — it prints
+    PASS or FAIL and exits with a code the script checks. And every
+    expected value comes from the reference model, not from a person
+    typing what they think the answer should be.
+
+    That second point is the one that matters. If I hand-wrote the golden
+    values, I'd be checking the RTL against my own understanding of the
+    spec — which is the same understanding that might be wrong.
+
+    Headline numbers: twenty-six thousand unit-level vectors across eleven
+    testbenches, sixty-eight assembly programs, and zero differing trace
+    lines against the reference model.
+
+Slide 16 — Three tiers · 0:45
+-----------------------------
+
+    Three tiers.
+
+    [STEP 1] Tier one is the flow. Every simulation goes through the same
+    three commands in batch mode. No GUI, no waveform viewer, nobody
+    deciding by eye. A run exits zero only if the log has a PASS line and
+    no FAIL line, so a regression can't quietly pass by being ignored.
+
+    [RIGHT] Tier two is the self-checking tests. A standalone testbench
+    for every module that isn't just wiring, plus one assembly program per
+    instruction with a golden register file. Every vector is generated by
+    the tools we'd already cross-validated — never by a second hand-
+    written copy of the logic I'm testing.
+
+    [RIGHT] Tier three is differential testing, and it's the strongest
+    thing we have. The reference model is an independent implementation of
+    the same instruction set, written in Python without reference to the
+    Verilog. Both run the same image. Both print one line per retiring
+    instruction. Then we diff the files.
+
+    Why that's worth the effort: a final-state check tells you the answer
+    is wrong. A trace diff tells you WHICH INSTRUCTION went wrong. On a
+    five-stage pipeline that's the difference between an afternoon and a
+    week.
+
+Slide 17 — Results · 0:40
+-------------------------
+
+    The results.
+
+    Twenty-six thousand four hundred unit vectors. Four thousand three
+    hundred toolchain checks — the assembler against the reference model,
+    before any RTL is involved. Sixty-eight assembly programs. And all of
+    it runs at four build configurations: forwarding on and off, predictor
+    on and off.
+
+    The biggest suites are on the left. The branch unit alone is sixteen
+    thousand vectors. The control decoder is six hundred and sixty-seven,
+    including a hundred and twenty deliberately illegal encodings.
+
+    [RIGHT] (point at the screenshot) And that's the regression output
+    itself, so you can see these came out of a tool rather than a table I
+    typed.
+
+    This suite is the acceptance criterion from slide two, already
+    running.
+
+Slide 18 — Performance · 1:15
+-----------------------------
+
+The slide the brief actually asks for. Give it the time.
+
+    Performance. Slide two promised we'd measure this against a baseline
+    rather than quote it in isolation. This is that measurement.
+
+    [STEP 1] First, forwarding. A compile-time parameter disables the
+    entire bypass network, and correctness is restored by stalling
+    instead. Same programs, same predictor setting, one parameter changes.
+
+    The three benchmarks together run in six thousand seven hundred and
+    ninety-nine cycles with forwarding, and nine thousand and three
+    without. One point three two times.
+
+    Per program: Fibonacci gains most, one point six five, because its
+    inner loop is a tight dependent chain — every iteration consumes the
+    previous result almost immediately. The branch loop gains least, one
+    point two two, and why is interesting: its load-use stall count is
+    zero even with forwarding on, because its loop bodies compute
+    independent things. There was nothing for the bypass network to save.
+
+    The dashed line is CPI of one. Everything above it, with forwarding
+    on, is control-flow bubbles and load-use stalls. No other source of
+    delay in this design.
+
+    [RIGHT] Second, the predictor. This is the change in cycle count when
+    we turn it on. Left is saved, right is cost.
+
+    The prediction demo saves fourteen and a half percent at ninety-five
+    percent accuracy. Fibonacci saves nearly nine.
+
+    But the branch loop gets ten percent WORSE, and we're showing you that
+    deliberately. That program was written to defeat a two-bit predictor —
+    its inner branch tests whether a counter is odd, so it alternates on
+    every iteration. That's the one pattern a saturating counter cannot
+    learn. The loss works out to exactly four hundred cycles, and the
+    measurement is exactly four hundred.
+
+    [RIGHT] So the honest summary: a two-bit table helps loop-dominated
+    code, does nothing for exit-dominated code, and hurts on alternating
+    branches. A cheap heuristic, not a guarantee. And correctness never
+    depends on it — with the predictor off, the machine reproduces the
+    static cycle counts exactly.
+
+Slide 19 — Waveform · 0:40
+--------------------------
+
+    One piece of evidence that isn't a number.
+
+    (point at the waveform) This is the load-use case in the simulator.
+    The stall signal goes high for exactly one cycle, and while it does,
+    the program counter and the fetch register hold their values. The
+    cycle after, the forwarding select switches to the Memory-Writeback
+    path — the bypass delivering the loaded value.
+
+    [RIGHT] Further along, flush on the fetch and decode registers pulsing
+    together on a taken branch, killing two slots, and the trace-valid
+    signal never asserting for either.
+
+    I want to be precise about what this slide is. Correctness is decided
+    by the self-checking testbenches, never by reading a waveform. This is
+    evidence for you, not the test.
+
+Slide 20 — Close · 0:30
+-----------------------
+
+    To close.
+
+    Function: forty-six encodings execute correctly on a five-stage
+    pipeline with full forwarding, an interlock and flush-based recovery,
+    checked byte for byte against an independent model at every build
+    configuration.
+
+    Performance: forwarding is worth one point three two times overall,
+    one point six five on the tightest loop, and the predictor reaches
+    ninety-five percent where branches are taken. Both measured with the
+    feature switched off as the baseline.
+
+    Between here and the seventeenth: two timing improvements, the final
+    regression, the final synthesis run, and the demo package.
+
+    Every criterion we set on slide two is already met once. What remains
+    is measurement on a machine that runs, not design work.
+
+    Thank you — happy to take questions.
+
+------------------------------------------------------------------------------
+
+==============================================================================
+QUESTION PREPARATION
+==============================================================================
+
+Jump to the appendix if these come up. The appendix slides sit after slide 20.
+
+  Q.  Why no cache?
+      go to slide 5, or A1
+      Behind a single-cycle memory a hit and a miss cost the same, so
+      CPI wouldn't move. And the whole suite fits in two kilobytes, so
+      the hit rate would read ninety-nine percent on every program.
+      Designed and written up, not built.
+
+  Q.  Why not Mars?
+      go to slide 5, or A2
+      Mars executes MIPS. It cannot assemble or check RISC-V. We wrote
+      an assembler and a reference model instead, and cross-validated
+      them against each other.
+
+  Q.  How do you know your tests aren't broken?
+      go to A3
+      We broke the modules on purpose. Every testbench was run against
+      a deliberately faulty copy of its own module and confirmed to
+      fail before we trusted it.
+
+  Q.  Why did the predictor mutation catch nothing?
+      go to A3
+      Because that's correct. The predictor only changes WHEN
+      instructions are fetched, never what they compute. Correctness
+      rests on the execute-stage resolution, so a trace diff should be
+      blind to a misprediction rate.
+
+  Q.  Why only 74 MHz?
+      go to slide 14
+      The critical path is a load feeding a branch through forwarding
+      in one cycle. The block RAM output alone is two and a half
+      nanoseconds. Two fixes are designed and scheduled.
+
+  Q.  Is hold timing met?
+      go to slide 14
+      Register-to-register hold is met at every constraint point. The
+      only hold flags start at the reset input port, an artefact of
+      out-of-context synthesis where no clock buffer is modelled.
+
+  Q.  Are these numbers final?
+      go to slide 8
+      No. One pending timing change alters when a load result is
+      available, so it can move CPI. Everything is re-measured after
+      the feature freeze. That's on the risk register.
+
+  Q.  37 or 46 instructions?
+      go to slide 4
+      Forty-six encodings: thirty-seven core plus nine system. We
+      state it that way consistently.
+
+  Q.  What happens on an illegal instruction?
+      go to -
+      It decodes to an all-zero control word and executes as a no-op.
+      Not retired, not traced. We did not implement an illegal-
+      instruction trap.
+
+  Q.  Misaligned access?
+      go to A1
+      Defined as don't-care and documented. The reference model does
+      the same, so simulation and RTL still agree bit for bit.
+
+  Q.  Why five stages and not more?
+      go to slide 5
+      It's the shallowest design that still exposes all three hazard
+      classes, which is what the exercise is about. Deeper would add
+      hazard distance without adding anything we'd learn from.
+
+==============================================================================
+BEFORE YOU WALK IN
+==============================================================================
+
+  [ ] Replace [ name ] on slides 1, 3, 9 and 15.
+  [ ] Paste the regression screenshot into slide 17.
+  [ ] Paste the waveform screenshot into slide 19.
+  [ ] Open the deck full screen and click through every build once.
+  [ ] Agree who drives the clicker across the two handovers (end of
+        slide 8, end of slide 14).
+  [ ] Note the appendix numbers: A1 decisions, A2 modules, A3 mutation
+        testing.

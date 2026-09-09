@@ -1,0 +1,1635 @@
+<title>RV32I Pipeline Midterm</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+/* ============================================================
+   RV32I Pipeline Midterm - deck
+   Colour  beige paper ground (#E7DECB) with cream cards; warm
+           near-black ink. Dark theme is warm espresso with beige
+           ink. Series blue #2F6FA8 / ochre #9A6410 (CVD-validated
+           against the cream surface). Stage ramp is a single-hue
+           sequential blue running away from the ground in both
+           themes. Hazard semantics are separate: bypass ochre,
+           interlock violet, flush red.
+   Type    Archivo (display) / IBM Plex Sans (prose) / IBM Plex
+           Mono (every measured quantity)
+   Layout  1920x1080 stage scaled to viewport; one persistent rail
+           carrying section, pipeline mini-map and progress; one
+           dominant figure per slide revealed in build steps
+   ============================================================ */
+
+:root{
+  --ground:#E7DECB;
+  --surface:#F7F3E8;
+  --surface-2:#FCFAF3;
+  --surface-3:#DDD3BE;
+  --ink:#2A2419;
+  --ink-2:#655C4C;
+  --ink-3:#8F8674;
+  --rule:#D2C7AF;
+  --rule-2:#B7AA8E;
+
+  --series-a:#2F6FA8;
+  --series-b:#9A6410;
+
+  --fwd:#9A6410;
+  --stall:#6B54A8;
+  --flush:#A83226;
+  --ok:#3E7A4A;
+
+  --st1:#CBDBEA; --st1-ink:#1B2A38;
+  --st2:#9CBBD8; --st2-ink:#1B2A38;
+  --st3:#6E97C0; --st3-ink:#F7F3E8;
+  --st4:#4574A2; --st4-ink:#F7F3E8;
+  --st5:#2A5479; --st5-ink:#F7F3E8;
+
+  --tint-a:rgba(47,111,168,.12);
+  --tint-b:rgba(154,100,16,.14);
+  --grid:rgba(42,36,25,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#191510;
+    --surface:#24201A;
+    --surface-2:#2D2820;
+    --surface-3:#131009;
+    --ink:#EDE4D2;
+    --ink-2:#AFA48D;
+    --ink-3:#7D7462;
+    --rule:#3A342B;
+    --rule-2:#4F473A;
+
+    --series-a:#4F97D6;
+    --series-b:#B8862B;
+
+    --fwd:#B8862B;
+    --stall:#9385D2;
+    --flush:#D2695C;
+    --ok:#6FA97D;
+
+    --st1:#25384A; --st1-ink:#EDE4D2;
+    --st2:#33506B; --st2-ink:#EDE4D2;
+    --st3:#446A8B; --st3-ink:#EDE4D2;
+    --st4:#5F8CB2; --st4-ink:#191510;
+    --st5:#88B2D4; --st5-ink:#191510;
+
+    --tint-a:rgba(79,151,214,.15);
+    --tint-b:rgba(184,134,43,.16);
+    --grid:rgba(237,228,210,.045);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#191510;
+  --surface:#24201A;
+  --surface-2:#2D2820;
+  --surface-3:#131009;
+  --ink:#EDE4D2;
+  --ink-2:#AFA48D;
+  --ink-3:#7D7462;
+  --rule:#3A342B;
+  --rule-2:#4F473A;
+
+  --series-a:#4F97D6;
+  --series-b:#B8862B;
+
+  --fwd:#B8862B;
+  --stall:#9385D2;
+  --flush:#D2695C;
+  --ok:#6FA97D;
+
+  --st1:#25384A; --st1-ink:#EDE4D2;
+  --st2:#33506B; --st2-ink:#EDE4D2;
+  --st3:#446A8B; --st3-ink:#EDE4D2;
+  --st4:#5F8CB2; --st4-ink:#191510;
+  --st5:#88B2D4; --st5-ink:#191510;
+
+  --tint-a:rgba(79,151,214,.15);
+  --tint-b:rgba(184,134,43,.16);
+  --grid:rgba(237,228,210,.045);
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--ground);
+  color:var(--ink);
+  font-family:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif;
+  margin:0; overflow:hidden;
+}
+.viewport{position:fixed; inset:0; display:flex; align-items:center; justify-content:center}
+.stage{
+  width:1920px; height:1080px; flex:none;
+  transform-origin:center center;
+  display:flex; flex-direction:column;
+  padding:0 96px;
+  background:
+    linear-gradient(var(--grid) 1px, transparent 1px) 0 0/48px 48px,
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0/48px 48px,
+    var(--ground);
+}
+
+/* ---- persistent rail ---- */
+.rail{height:104px; flex:none; display:flex; align-items:center; gap:22px; border-bottom:1px solid var(--rule)}
+.rail .dot{width:7px;height:7px;border-radius:50%;background:var(--series-a);flex:none}
+.rail .sect{
+  font-family:"IBM Plex Mono",ui-monospace,monospace;
+  font-size:19px; font-weight:600; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ink-2); white-space:nowrap;
+}
+.rail .spacer{flex:1}
+.rail .meta{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:18px; color:var(--ink-3); letter-spacing:.05em; white-space:nowrap; margin-left:16px}
+
+/* pipeline mini-map: where in the pipeline this slide lives */
+.minimap{display:flex; gap:4px; align-items:center}
+.minimap i{
+  font-family:"IBM Plex Mono",ui-monospace,monospace; font-style:normal;
+  font-size:13px; font-weight:600; letter-spacing:.08em;
+  width:52px; height:26px; border-radius:2px;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--surface-3); color:var(--ink-3);
+  border:1px solid var(--rule); transition:none;
+}
+.minimap i.lit{background:var(--series-a); color:var(--surface); border-color:var(--series-a)}
+.segs{display:flex;gap:5px;align-items:center;margin-left:34px}
+.seg{width:46px;height:4px;background:var(--rule-2);border-radius:2px}
+.seg.act{background:var(--series-a)}
+
+/* ---- deck ---- */
+.deck{flex:1; position:relative; min-height:0}
+.slide{position:absolute; inset:0; display:none; flex-direction:column}
+.slide.on{display:flex}
+.body{flex:1; padding:40px 0 20px; display:flex; flex-direction:column; min-height:0}
+
+h1{font-family:Archivo,"Helvetica Neue",Arial,sans-serif; font-weight:700; font-size:62px; line-height:1.04; letter-spacing:-.022em; margin:0; text-wrap:balance}
+h2{font-family:Archivo,"Helvetica Neue",Arial,sans-serif; font-weight:700; font-size:46px; line-height:1.06; letter-spacing:-.018em; margin:0 0 10px; text-wrap:balance}
+.dek{font-size:25px; line-height:1.42; color:var(--ink-2); max-width:1180px; margin:0}
+.eyebrow{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:17px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--series-a); margin:0 0 14px}
+
+.key{flex:none; min-height:92px; padding:20px 0 26px; border-top:1px solid var(--rule); display:flex; align-items:center; gap:18px}
+.key .bar{width:4px; align-self:stretch; background:var(--series-a); border-radius:2px; flex:none}
+.key p{margin:0; font-size:27px; line-height:1.34; font-weight:500; letter-spacing:-.005em}
+.key em{font-style:normal; color:var(--series-a)}
+
+/* ---- build steps ---- */
+[data-step]{opacity:0; transition:opacity .3s ease}
+[data-step].shown{opacity:1}
+@media (prefers-reduced-motion: reduce){[data-step]{transition:none}}
+
+/* ---- pieces ---- */
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.fig{margin:0; flex:1; display:flex; flex-direction:column; justify-content:center; min-height:0}
+.fig svg{width:100%; height:auto; max-height:100%; display:block}
+figcaption{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:17px; color:var(--ink-3); margin-top:14px; letter-spacing:.02em}
+
+.panel{background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:24px 26px}
+.panel h3{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:16px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3); margin:0 0 16px}
+
+table.spec{border-collapse:collapse; width:100%; font-size:22px}
+table.spec td{padding:13px 0; border-bottom:1px solid var(--rule); vertical-align:top}
+table.spec tr:last-child td{border-bottom:0}
+table.spec td.k{color:var(--ink-2); width:250px; padding-right:26px; font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:18px; letter-spacing:.04em; text-transform:uppercase; padding-top:16px}
+
+table.data{border-collapse:collapse; width:100%; font-size:21px; font-variant-numeric:tabular-nums}
+table.data th{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:15px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); text-align:right; padding:0 14px 11px; border-bottom:1px solid var(--rule-2)}
+table.data th:first-child{text-align:left}
+table.data td{padding:12px 14px; text-align:right; border-bottom:1px solid var(--rule)}
+table.data td:first-child{text-align:left; font-family:"IBM Plex Mono",ui-monospace,monospace}
+table.data tr:last-child td{border-bottom:0}
+table.data tr.hi td{background:var(--tint-a); font-weight:600}
+table.data td.num{font-family:"IBM Plex Mono",ui-monospace,monospace}
+table.data td.w{text-align:left; font-family:"IBM Plex Sans",sans-serif; font-size:19px; color:var(--ink-2); padding-left:30px}
+
+.tiles{display:grid; gap:18px}
+.tile{background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:22px 24px; display:flex; flex-direction:column; gap:6px}
+.tile .n{font-family:Archivo,sans-serif; font-weight:700; font-size:52px; letter-spacing:-.03em; line-height:1; font-variant-numeric:tabular-nums}
+.tile .l{font-size:19px; color:var(--ink-2); line-height:1.34}
+.tile .s{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:15px; color:var(--ink-3); letter-spacing:.04em}
+
+.chips{display:flex; gap:8px; flex-wrap:wrap}
+.chip{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:17px; padding:6px 11px; border-radius:2px; background:var(--surface-3); border:1px solid var(--rule); color:var(--ink-2)}
+
+.capture{border:2px dashed var(--series-b); border-radius:4px; background:var(--tint-b); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:34px; text-align:center}
+.capture .tag{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:16px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--series-b); border:1px solid var(--series-b); padding:6px 14px; border-radius:2px}
+.capture .what{font-size:27px; font-weight:600; max-width:900px; line-height:1.32}
+.capture .how{font-size:20px; color:var(--ink-2); max-width:900px; line-height:1.5; margin:0}
+.capture code{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:19px; background:var(--surface); border:1px solid var(--rule); padding:9px 14px; border-radius:2px; display:inline-block; color:var(--ink)}
+
+.title-wrap{flex:1; display:flex; flex-direction:column; justify-content:center; gap:30px}
+.title-wrap h1{font-size:92px; letter-spacing:-.03em}
+.stagestrip{display:flex; gap:10px}
+.stagestrip div{flex:1; height:72px; border-radius:3px; display:flex; align-items:center; justify-content:center; font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:24px; font-weight:600; letter-spacing:.22em}
+.keyline{display:flex; gap:34px; align-items:center; flex-wrap:wrap; font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:18px; color:var(--ink-2)}
+.keyline span{display:flex; gap:10px; align-items:center}
+.keyline i{width:16px; height:16px; border-radius:2px; display:block}
+
+.ctl{position:fixed; right:22px; bottom:20px; display:flex; gap:8px; align-items:center; font-family:"IBM Plex Mono",ui-monospace,monospace; z-index:10}
+.ctl button{font:inherit; font-size:16px; color:var(--ink-2); background:var(--surface); border:1px solid var(--rule-2); border-radius:3px; padding:8px 13px; cursor:pointer; line-height:1}
+.ctl button:hover{color:var(--ink); border-color:var(--ink-3)}
+.ctl button:focus-visible{outline:2px solid var(--series-a); outline-offset:2px}
+.ctl .pos{font-size:16px; color:var(--ink-3); padding:0 8px; font-variant-numeric:tabular-nums}
+
+@media print{
+  body{overflow:visible}
+  .viewport{position:static; display:block}
+  .stage{transform:none !important; height:auto}
+  .deck{position:static}
+  .slide{display:flex !important; position:relative; page-break-after:always; height:960px}
+  [data-step]{opacity:1 !important}
+  .ctl{display:none}
+}
+</style>
+
+<div class="viewport">
+<div class="stage" id="stage">
+
+  <header class="rail">
+    <span class="dot"></span>
+    <span class="sect" id="sect">Computer Organization</span>
+    <span class="spacer"></span>
+    <span class="minimap" id="minimap"><i data-s="IF">IF</i><i data-s="ID">ID</i><i data-s="EX">EX</i><i data-s="MEM">MEM</i><i data-s="WB">WB</i></span>
+    <span class="segs" id="segs"><i class="seg"></i><i class="seg"></i><i class="seg"></i></span>
+    <span class="meta" id="meta">1 / 20</span>
+  </header>
+
+  <div class="deck" id="deck">
+
+  <!-- ============ 01 TITLE + LEGEND ============ -->
+  <section class="slide on" data-sect="Computer Organization &middot; BIT Y4T1" data-seg="0" data-steps="1">
+    <div class="body">
+      <div class="title-wrap">
+        <div>
+          <p class="eyebrow">Pipeline CPU Project &middot; Midterm Review</p>
+          <h1>A 5-stage RISC-V<br>RV32I processor in Verilog</h1>
+        </div>
+        <p class="dek" style="font-size:27px;max-width:1320px">
+          46 instruction encodings, full forwarding, a load-use interlock, branch prediction and
+          machine-mode interrupts. Verified against a golden reference model we wrote ourselves,
+          and synthesized for an Artix-7.
+        </p>
+        <div class="stagestrip">
+          <div style="background:var(--st1);color:var(--st1-ink)">IF</div>
+          <div style="background:var(--st2);color:var(--st2-ink)">ID</div>
+          <div style="background:var(--st3);color:var(--st3-ink)">EX</div>
+          <div style="background:var(--st4);color:var(--st4-ink)">MEM</div>
+          <div style="background:var(--st5);color:var(--st5-ink)">WB</div>
+        </div>
+        <div class="keyline">
+          <span style="color:var(--ink-3)">Colours used throughout:</span>
+          <span><i style="background:var(--fwd)"></i>bypass network</span>
+          <span><i style="background:var(--stall)"></i>interlock / stall</span>
+          <span><i style="background:var(--flush)"></i>flush / killed</span>
+          <span><i style="background:var(--ok)"></i>free</span>
+        </div>
+        <table class="spec" style="max-width:1120px">
+          <tr><td class="k">Design</td><td><span style="color:var(--ink-3)">[ name ]</span> &middot; microarchitecture, hazard scheme, design document</td></tr>
+          <tr><td class="k">Coding</td><td><span style="color:var(--ink-3)">[ name ]</span> &middot; 19 RTL modules, assembler, reference model</td></tr>
+          <tr><td class="k">Testing</td><td><span style="color:var(--ink-3)">[ name ]</span> &middot; testbenches, trace diffing, performance measurement</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>What we propose to build, why we chose it, and <em>the prototype that already shows it works</em>.</p></div>
+  </section>
+
+
+
+  <!-- ============ P1 OBJECTIVE ============ -->
+  <section class="slide" data-sect="01 &middot; Design" data-seg="1" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">The task</p>
+      <h2>What we are building, and how it will be judged</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1fr 1.25fr; gap:34px; padding-top:16px; align-content:start; min-height:0">
+        <div class="panel" style="border-color:var(--rule-2)">
+          <h3>The course task, verbatim</h3>
+          <p style="margin:0 0 18px; font-size:21px; line-height:1.5; color:var(--ink); font-style:italic">
+            &ldquo;Design a pipeline CPU based on MIPS/RISC-V or other instruction subsets with more
+            than 16 instructions. And implement the CPU by Verilog HDL. Use the simulation tools to
+            show the function and performance of your CPU.&rdquo;
+          </p>
+          <p style="margin:0; font-size:20px; line-height:1.5; color:var(--ink-2)">
+            &ldquo;Bonus items: support interrupt, cache, branch prediction.&rdquo;
+          </p>
+          <div style="margin-top:24px; padding-top:20px; border-top:1px solid var(--rule)">
+            <p class="mono" style="font-size:15px; letter-spacing:.12em; color:var(--ink-3); margin:0 0 12px">EXPLICITLY OUT OF SCOPE</p>
+            <p style="margin:0; font-size:19px; line-height:1.45; color:var(--ink-2)">
+              No FPGA board bring-up &mdash; the task says <em>simulation tools</em>, so we deliver
+              simulation plus a synthesis report on a named part. No instruction cache; the reasoning
+              is on the next slide.
+            </p>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:22px; min-height:0">
+          <div class="panel" style="border-color:var(--series-a)">
+            <h3 style="color:var(--series-a)">What we commit to deliver</h3>
+            <table class="spec">
+              <tr><td class="k">Machine</td><td>A 5-stage in-order RV32I pipeline, <strong>46 encodings</strong>, with full forwarding, a load-use interlock and flush-based control recovery</td></tr>
+              <tr><td class="k">Bonus &times;2</td><td>A 2-bit branch predictor and machine-mode interrupts, each with a measurable effect and each switchable off</td></tr>
+              <tr><td class="k">Toolchain</td><td>An assembler and an independent reference model, because the named tool cannot execute this ISA</td></tr>
+              <tr><td class="k">Evidence</td><td>A self-checking test suite, a design document, and a synthesis report for <span class="mono">xc7a35tcpg236-1</span></td></tr>
+            </table>
+          </div>
+          <div class="panel" style="flex:1">
+            <h3>How we will know it is done</h3>
+            <table class="spec">
+              <tr><td class="k">Correct</td><td>Every instruction checked against an independent implementation, byte for byte, not against our own expectations</td></tr>
+              <tr><td class="k">Function</td><td>Shown in simulation, with every test stating its own PASS or FAIL verdict</td></tr>
+              <tr><td class="k">Performance</td><td>Measured by <strong>switching a feature off</strong> and re-running the same programs. A number with no baseline proves nothing</td></tr>
+              <tr><td class="k">Synthesis</td><td>An fmax and a utilisation figure on a named part, with the critical path identified</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span>
+      <p data-step="2">We are past proposing this on paper. <em>A working prototype already meets every criterion above</em>, and the rest of this talk is the evidence.</p>
+    </div>
+  </section>
+  <!-- ============ MEMBER: DESIGN &MDASH; THE SPECIFICATION THE RTL WAS WRITTEN AGAINST ============ -->
+  <section class="slide" data-sect="01 &middot; Design" data-seg="1" data-steps="1">
+    <div class="body">
+      <p class="eyebrow">Speaker 1 of 3 &middot; <span style='color:var(--ink-3)'>[ name ]</span></p>
+      <h2>Design &mdash; the specification the RTL was written against</h2>
+      <p class="dek" style="margin-bottom:22px">Every decision below was made and written down before a line of Verilog existed, so the coder implemented a specification rather than inventing one.</p>
+      <div style="flex:1; display:grid; grid-template-columns:1.15fr 1fr; gap:32px; align-content:start; min-height:0">
+        <div class="panel">
+          <h3>Owned end to end</h3>
+          <table class="spec"><tr><td class="k">Microarch</td><td>Five-stage structure, pipeline-register field lists, PC-select priority</td></tr><tr><td class="k">ISA</td><td>Instruction subset, all six formats, immediate extraction, CSR zimm</td></tr><tr><td class="k">Hazards</td><td>Forwarding rules and priority, load-use interlock, flush rules</td></tr><tr><td class="k">Memory</td><td>Harvard layout, sizes, byte lanes, misalignment policy, reset strategy</td></tr><tr><td class="k">Traps</td><td>CSR set, mepc / mcause semantics, the ecall versus interrupt asymmetry</td></tr><tr><td class="k">Review</td><td>Read every RTL module against the spec before it was committed</td></tr></table>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="tiles" style="grid-template-columns:1fr 1fr 1fr"><div class="tile"><span class="n" style="color:var(--series-a)">46</span><span class="l">encodings specified</span><span class="s">37 core + 9 system</span></div><div class="tile"><span class="n" style="color:var(--ink)">22</span><span class="l">control signals</span><span class="s">per instruction</span></div><div class="tile"><span class="n" style="color:var(--series-b)">1,708</span><span class="l">lines of design doc</span><span class="s">the living spec</span></div></div>
+          <div class="panel" style="flex:1">
+            <h3>Delivered</h3>
+            <ul style="margin:0; padding-left:22px; font-size:20px; line-height:1.4; color:var(--ink-2)"><li style="margin-bottom:10px">The 46-encoding ISA table and all six immediate formats</li><li style="margin-bottom:10px">The 46-row control truth table, 22 signals wide</li><li style="margin-bottom:10px">Datapath and hazard diagrams for the report</li><li style="margin-bottom:10px">CSR, trap and <span class='mono'>mret</span> semantics</li><li style="margin-bottom:10px"><span class='mono'>docs/DESIGN.md</span>, kept current as the machine changed</li></ul>
+          </div>
+          <div class="panel" style="border-color:var(--series-a)">
+            <h3 style="color:var(--series-a)">Where to look</h3>
+            <p style="margin:0; font-size:20px; line-height:1.45; color:var(--ink-2)"><span class='mono'>docs/DESIGN.md</span>. The control truth table in section 3 is <strong>generated from the same source</strong> that generates the decoder's simulation vectors, so the document and the test cannot drift apart.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>The design document is not a write-up of what was built. It is <em>what the build was checked against</em>.</p></div>
+  </section>
+  <!-- ============ 02 SCOPE ============ -->
+  <section class="slide" data-sect="01 &middot; Design" data-seg="1" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">Scope</p>
+      <h2>46 encodings against a 16-instruction requirement</h2>
+      <figure class="fig">
+        <svg viewBox="0 0 1690 470" role="img" aria-label="The 46 implemented encodings grouped into eight instruction classes, compared against the course minimum of 16 instructions.">
+          <text x="0" y="22" font-family="IBM Plex Mono, monospace" font-size="16" font-weight="600" letter-spacing="1.6" fill="var(--ink-3)">COURSE MINIMUM</text>
+          <rect x="0" y="36" width="292" height="30" rx="2" fill="var(--rule-2)"/>
+          <text x="304" y="58" font-family="IBM Plex Mono, monospace" font-size="21" font-weight="600" fill="var(--ink-2)">16</text>
+          <text x="0" y="110" font-family="IBM Plex Mono, monospace" font-size="16" font-weight="600" letter-spacing="1.6" fill="var(--series-a)">IMPLEMENTED</text>
+          <rect x="0" y="124" width="840" height="30" rx="2" fill="var(--series-a)"/>
+          <text x="852" y="146" font-family="IBM Plex Mono, monospace" font-size="21" font-weight="600" fill="var(--series-a)">46</text>
+          <text x="905" y="146" font-family="IBM Plex Sans, sans-serif" font-size="20" fill="var(--ink-3)">2.9&times; the requirement</text>
+
+          <g data-step="2" font-family="IBM Plex Mono, monospace">
+            <g>
+              <rect x="0" y="208" width="404" height="106" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <rect x="0" y="208" width="404" height="4" rx="2" fill="var(--st3)"/>
+              <text x="18" y="242" font-size="17" font-weight="600" letter-spacing="1.4" fill="var(--ink-3)">R-TYPE</text>
+              <text x="386" y="242" font-size="26" font-weight="600" text-anchor="end" fill="var(--ink)">10</text>
+              <text x="18" y="272" font-size="16" fill="var(--ink-2)">add sub sll slt sltu</text>
+              <text x="18" y="296" font-size="16" fill="var(--ink-2)">xor srl sra or and</text>
+            </g>
+            <g>
+              <rect x="428" y="208" width="404" height="106" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <rect x="428" y="208" width="404" height="4" rx="2" fill="var(--st3)"/>
+              <text x="446" y="242" font-size="17" font-weight="600" letter-spacing="1.4" fill="var(--ink-3)">I-ARITHMETIC</text>
+              <text x="814" y="242" font-size="26" font-weight="600" text-anchor="end" fill="var(--ink)">9</text>
+              <text x="446" y="272" font-size="16" fill="var(--ink-2)">addi slti sltiu xori ori</text>
+              <text x="446" y="296" font-size="16" fill="var(--ink-2)">andi slli srli srai</text>
+            </g>
+            <g>
+              <rect x="856" y="208" width="404" height="106" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <rect x="856" y="208" width="404" height="4" rx="2" fill="var(--st4)"/>
+              <text x="874" y="242" font-size="17" font-weight="600" letter-spacing="1.4" fill="var(--ink-3)">LOADS</text>
+              <text x="1242" y="242" font-size="26" font-weight="600" text-anchor="end" fill="var(--ink)">5</text>
+              <text x="874" y="272" font-size="16" fill="var(--ink-2)">lb lh lw lbu lhu</text>
+              <text x="874" y="296" font-size="15" fill="var(--ink-3)">sign / zero extended</text>
+            </g>
+            <g>
+              <rect x="1284" y="208" width="404" height="106" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <rect x="1284" y="208" width="404" height="4" rx="2" fill="var(--st4)"/>
+              <text x="1302" y="242" font-size="17" font-weight="600" letter-spacing="1.4" fill="var(--ink-3)">STORES</text>
+              <text x="1670" y="242" font-size="26" font-weight="600" text-anchor="end" fill="var(--ink)">3</text>
+              <text x="1302" y="272" font-size="16" fill="var(--ink-2)">sb sh sw</text>
+              <text x="1302" y="296" font-size="15" fill="var(--ink-3)">byte-lane writes</text>
+            </g>
+            <g>
+              <rect x="0" y="332" width="404" height="106" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <rect x="0" y="332" width="404" height="4" rx="2" fill="var(--st2)"/>
+              <text x="18" y="366" font-size="17" font-weight="600" letter-spacing="1.4" fill="var(--ink-3)">BRANCHES</text>
+              <text x="386" y="366" font-size="26" font-weight="600" text-anchor="end" fill="var(--ink)">6</text>
+              <text x="18" y="396" font-size="16" fill="var(--ink-2)">beq bne blt bge</text>
+              <text x="18" y="420" font-size="16" fill="var(--ink-2)">bltu bgeu</text>
+            </g>
+            <g>
+              <rect x="428" y="332" width="404" height="106" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <rect x="428" y="332" width="404" height="4" rx="2" fill="var(--st2)"/>
+              <text x="446" y="366" font-size="17" font-weight="600" letter-spacing="1.4" fill="var(--ink-3)">U-TYPE &amp; JUMPS</text>
+              <text x="814" y="366" font-size="26" font-weight="600" text-anchor="end" fill="var(--ink)">4</text>
+              <text x="446" y="396" font-size="16" fill="var(--ink-2)">lui auipc</text>
+              <text x="446" y="420" font-size="16" fill="var(--ink-2)">jal jalr</text>
+            </g>
+            <g>
+              <rect x="856" y="332" width="832" height="106" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <rect x="856" y="332" width="832" height="4" rx="2" fill="var(--st5)"/>
+              <text x="874" y="366" font-size="17" font-weight="600" letter-spacing="1.4" fill="var(--ink-3)">SYSTEM &mdash; THE INTERRUPT BONUS</text>
+              <text x="1670" y="366" font-size="26" font-weight="600" text-anchor="end" fill="var(--ink)">9</text>
+              <text x="874" y="396" font-size="16" fill="var(--ink-2)">csrrw csrrs csrrc csrrwi csrrsi csrrci</text>
+              <text x="874" y="420" font-size="16" fill="var(--ink-2)">ecall &nbsp; ebreak &nbsp; mret</text>
+            </g>
+          </g>
+        </svg>
+        <figcaption>All 46 follow the RISC-V Unprivileged and Privileged specifications exactly. <span class="mono">fence</span> and <span class="mono">wfi</span> decode as illegal.</figcaption>
+      </figure>
+    </div>
+    <div class="key"><span class="bar"></span><p><em>ebreak</em> doubles as the simulation halt. RV32I has no halt instruction, so it raises a <span class="mono">done</span> flag the testbench watches.</p></div>
+  </section>
+
+
+  <!-- ============ P2 DESIGN CHOICES ============ -->
+  <section class="slide" data-sect="01 &middot; Design" data-seg="1" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">Design choices</p>
+      <h2>What we chose, and what we ruled out</h2>
+      <div class="panel" style="flex:1; margin-top:14px; min-height:0">
+        <table class="data" style="font-size:20px">
+          <thead><tr>
+            <th style="width:190px">Decision</th>
+            <th style="text-align:left; width:290px">We chose</th>
+            <th style="text-align:left; width:250px">Instead of</th>
+            <th style="text-align:left">Why</th>
+          </tr></thead>
+          <tbody>
+            <tr><td>ISA</td><td class="w" style="padding-left:14px;color:var(--ink)">RISC-V RV32I, 46 encodings</td><td class="w" style="padding-left:14px">MIPS</td><td class="w">A clean orthogonal encoding we could assemble and model ourselves, and 2.9&times; the 16-instruction minimum</td></tr>
+            <tr><td>Pipeline</td><td class="w" style="padding-left:14px;color:var(--ink)">5-stage in-order</td><td class="w" style="padding-left:14px">Single-cycle, or a deeper pipe</td><td class="w">Textbook depth is the shallowest design that exposes all three hazard classes, which is the point of the exercise</td></tr>
+            <tr><td>Branches</td><td class="w" style="padding-left:14px;color:var(--ink)">jal in ID, branches and jalr in EX</td><td class="w" style="padding-left:14px">Everything resolved in one stage</td><td class="w"><span class="mono">jal</span> needs no register, so resolving it early is free. Branches need a compare, and doing it in EX keeps it off the decode path</td></tr>
+            <tr><td>Bonus A</td><td class="w" style="padding-left:14px;color:var(--ink)">2-bit branch history table</td><td class="w" style="padding-left:14px">Static prediction only</td><td class="w">Cheap in area, and its accuracy is a number we can report honestly &mdash; including where it loses</td></tr>
+            <tr><td>Bonus B</td><td class="w" style="padding-left:14px;color:var(--ink)">CSRs, traps and <span class="mono">mret</span></td><td class="w" style="padding-left:14px">&mdash;</td><td class="w">Exercises privileged state and trap semantics, and is demonstrable from a testbench-driven interrupt line</td></tr>
+            <tr style="background:var(--tint-b)"><td style="color:var(--series-b)">Bonus C</td><td class="w" style="padding-left:14px;color:var(--series-b)"><strong>Instruction cache &mdash; CUT</strong></td><td class="w" style="padding-left:14px">Building it anyway</td><td class="w" style="color:var(--ink)">Behind a single-cycle memory a hit and a miss cost the same, so CPI would not move. The whole suite fits in 2 KB, so the hit rate would read ~99&nbsp;% on every program. <strong>Designed and written up, not built.</strong></td></tr>
+            <tr><td>Reference</td><td class="w" style="padding-left:14px;color:var(--ink)">Our own Python model</td><td class="w" style="padding-left:14px">Mars4_5, as the brief names</td><td class="w">Mars executes MIPS. It cannot assemble or check RISC-V, so there was no oracle to borrow</td></tr>
+            <tr><td>Target</td><td class="w" style="padding-left:14px;color:var(--ink)">Simulation + synthesis report</td><td class="w" style="padding-left:14px">FPGA board demo</td><td class="w">The brief asks for simulation. Synthesis still yields fmax and utilisation without board bring-up risk</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span>
+      <p data-step="2">The cache was cut on a <em>measurement</em> argument, not a schedule one. A figure that reads 99&nbsp;% on every program says nothing about the design.</p>
+    </div>
+  </section>
+  <!-- ============ 03 DATAPATH (4 builds) ============ -->
+  <section class="slide" data-sect="01 &middot; Design" data-seg="1" data-hi="IF,ID,EX,MEM,WB" data-steps="4">
+    <div class="body">
+      <p class="eyebrow">Datapath</p>
+      <h2>Five stages, three bypasses, one interlock</h2>
+      <figure class="fig">
+        <svg viewBox="0 0 1700 600" role="img" aria-label="Block diagram of the five-stage pipeline showing IF, ID, EX, MEM and WB stages separated by pipeline registers, with two forwarding paths returning to EX and four PC-redirect sources returning to the fetch stage.">
+          <defs>
+            <marker id="ahF" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--fwd)"/></marker>
+            <marker id="ahR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--flush)"/></marker>
+            <marker id="ahI" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--stall)"/></marker>
+          </defs>
+
+          <g font-family="IBM Plex Mono, monospace">
+            <rect x="20" y="128" width="280" height="292" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+            <rect x="20" y="128" width="280" height="40" rx="3" fill="var(--st1)"/>
+            <text x="160" y="155" font-size="20" font-weight="600" letter-spacing="3" text-anchor="middle" fill="var(--st1-ink)">IF</text>
+            <rect x="36" y="186" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="160" y="215" font-size="16" text-anchor="middle" fill="var(--ink)">pc.v + PC-select mux</text>
+            <rect x="36" y="244" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="160" y="266" font-size="16" text-anchor="middle" fill="var(--ink)">imem.v &nbsp;4 KB</text>
+            <text x="160" y="284" font-size="14" text-anchor="middle" fill="var(--ink-3)">synchronous read</text>
+            <rect x="36" y="302" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="160" y="331" font-size="16" text-anchor="middle" fill="var(--ink)">bht.v &nbsp;lookup</text>
+
+            <rect x="350" y="128" width="280" height="292" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+            <rect x="350" y="128" width="280" height="40" rx="3" fill="var(--st2)"/>
+            <text x="490" y="155" font-size="20" font-weight="600" letter-spacing="3" text-anchor="middle" fill="var(--st2-ink)">ID</text>
+            <rect x="366" y="186" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="490" y="208" font-size="16" text-anchor="middle" fill="var(--ink)">control.v &middot; alu_ctrl.v</text>
+            <text x="490" y="226" font-size="14" text-anchor="middle" fill="var(--ink-3)">46-row truth table</text>
+            <rect x="366" y="244" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="490" y="266" font-size="16" text-anchor="middle" fill="var(--ink)">regfile.v &nbsp;read</text>
+            <text x="490" y="284" font-size="14" text-anchor="middle" fill="var(--ink-3)">WB to ID internal bypass</text>
+            <rect x="366" y="302" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="490" y="324" font-size="16" text-anchor="middle" fill="var(--ink)">imm_gen.v &nbsp;6 formats</text>
+            <text x="490" y="342" font-size="14" text-anchor="middle" fill="var(--ink-3)">jal target = pc + immJ</text>
+
+            <rect x="680" y="128" width="280" height="292" rx="3" fill="var(--surface)" stroke="var(--series-a)" stroke-width="2"/>
+            <rect x="680" y="128" width="280" height="40" rx="3" fill="var(--st3)"/>
+            <text x="820" y="155" font-size="20" font-weight="600" letter-spacing="3" text-anchor="middle" fill="var(--st3-ink)">EX</text>
+            <rect x="696" y="186" width="248" height="46" rx="2" fill="var(--tint-b)" stroke="var(--fwd)"/>
+            <text x="820" y="208" font-size="16" text-anchor="middle" fill="var(--ink)">forward mux A / B / C</text>
+            <text x="820" y="226" font-size="14" text-anchor="middle" fill="var(--fwd)">rs1 &middot; rs2 &middot; store data</text>
+            <rect x="696" y="244" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="820" y="273" font-size="16" text-anchor="middle" fill="var(--ink)">alu.v &nbsp;11 operations</text>
+            <rect x="696" y="302" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="820" y="324" font-size="16" text-anchor="middle" fill="var(--ink)">branch_unit.v &middot; csr.v</text>
+            <text x="820" y="342" font-size="14" text-anchor="middle" fill="var(--ink-3)">compare &middot; CSR read-modify-write</text>
+
+            <rect x="1010" y="128" width="280" height="292" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+            <rect x="1010" y="128" width="280" height="40" rx="3" fill="var(--st4)"/>
+            <text x="1150" y="155" font-size="20" font-weight="600" letter-spacing="3" text-anchor="middle" fill="var(--st4-ink)">MEM</text>
+            <rect x="1026" y="186" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="1150" y="208" font-size="16" text-anchor="middle" fill="var(--ink)">dmem.v &nbsp;4 KB</text>
+            <text x="1150" y="226" font-size="14" text-anchor="middle" fill="var(--ink-3)">synchronous read / write</text>
+            <rect x="1026" y="244" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="1150" y="273" font-size="16" text-anchor="middle" fill="var(--ink)">byte-lane select</text>
+
+            <rect x="1340" y="128" width="280" height="292" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+            <rect x="1340" y="128" width="280" height="40" rx="3" fill="var(--st5)"/>
+            <text x="1480" y="155" font-size="20" font-weight="600" letter-spacing="3" text-anchor="middle" fill="var(--st5-ink)">WB</text>
+            <rect x="1356" y="186" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="1480" y="208" font-size="16" text-anchor="middle" fill="var(--ink)">lane extend + wb mux</text>
+            <text x="1480" y="226" font-size="14" text-anchor="middle" fill="var(--ink-3)">load result valid here</text>
+            <rect x="1356" y="244" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="1480" y="266" font-size="16" text-anchor="middle" fill="var(--ink)">regfile write</text>
+            <text x="1480" y="284" font-size="14" text-anchor="middle" fill="var(--ink-3)">x0 suppressed</text>
+            <rect x="1356" y="302" width="248" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/>
+            <text x="1480" y="324" font-size="16" text-anchor="middle" fill="var(--ink)">commit trace port</text>
+            <text x="1480" y="342" font-size="14" text-anchor="middle" fill="var(--ink-3)">diffed against the ISS</text>
+          </g>
+
+          <g data-step="2">
+            <rect x="316" y="140" width="18" height="268" rx="2" fill="var(--rule-2)"/>
+            <rect x="646" y="140" width="18" height="268" rx="2" fill="var(--rule-2)"/>
+            <rect x="976" y="140" width="18" height="268" rx="2" fill="var(--rule-2)"/>
+            <rect x="1306" y="140" width="18" height="268" rx="2" fill="var(--rule-2)"/>
+            <g font-family="IBM Plex Mono, monospace" font-size="13" fill="var(--ink-3)" text-anchor="middle">
+              <text transform="rotate(-90 325 274)" x="325" y="274">IF/ID</text>
+              <text transform="rotate(-90 655 274)" x="655" y="274">ID/EX</text>
+              <text transform="rotate(-90 985 274)" x="985" y="274">EX/MEM</text>
+              <text transform="rotate(-90 1315 274)" x="1315" y="274">MEM/WB</text>
+            </g>
+          </g>
+
+          <g data-step="3">
+            <g stroke="var(--fwd)" fill="none" stroke-width="2">
+              <path d="M985 420 L985 456 L850 456 L850 232" marker-end="url(#ahF)"/>
+              <path d="M1315 420 L1315 500 L790 500 L790 232" marker-end="url(#ahF)"/>
+            </g>
+            <text x="998" y="450" font-family="IBM Plex Mono, monospace" font-size="15" fill="var(--fwd)">EX/MEM to EX &nbsp;distance 1 &nbsp;<tspan font-weight="600">priority</tspan></text>
+            <text x="1328" y="494" font-family="IBM Plex Mono, monospace" font-size="15" fill="var(--fwd)">MEM/WB to EX &nbsp;distance 2 &nbsp;carries load data</text>
+          </g>
+
+          <g data-step="4">
+            <g stroke="var(--flush)" fill="none" stroke-width="2">
+              <path d="M490 128 L490 96 L150 96 L150 124" marker-end="url(#ahR)"/>
+              <path d="M820 128 L820 56 L128 56 L128 124" marker-end="url(#ahR)"/>
+            </g>
+            <text x="500" y="90" font-family="IBM Plex Mono, monospace" font-size="15" fill="var(--flush)">jal target &mdash; resolved in ID, 1 bubble</text>
+            <text x="830" y="50" font-family="IBM Plex Mono, monospace" font-size="15" fill="var(--flush)">branch &middot; jalr &middot; mtvec &middot; mepc &mdash; resolved in EX, 2 bubbles</text>
+            <g stroke="var(--stall)" fill="none" stroke-width="2" stroke-dasharray="5 4">
+              <path d="M655 420 L655 544 L200 544 L200 420" marker-end="url(#ahI)"/>
+            </g>
+            <text x="668" y="538" font-family="IBM Plex Mono, monospace" font-size="15" fill="var(--stall)">load-use interlock &mdash; hold PC and IF/ID, bubble ID/EX</text>
+          </g>
+        </svg>
+        <figcaption>Harvard memory. Separate 4 KB instruction and data arrays, so fetch and memory access never contend.</figcaption>
+      </figure>
+    </div>
+    <div class="key"><span class="bar"></span><p>Every stage boundary is an explicit register with <em>stall</em> and <em>flush</em> inputs, so the hazard logic plugs in without touching the datapath.</p></div>
+  </section>
+
+  <!-- ============ 04 STATUS ============ -->
+  <section class="slide" data-sect="01 &middot; Design" data-seg="1" data-steps="1">
+    <div class="body">
+      <p class="eyebrow">Feasibility</p>
+      <h2>What already works</h2>
+      <p class="dek" style="margin-bottom:26px">Every commitment on the objective slide has been met once already, on a prototype that runs today. The schedule on the next slide is what remains.</p>
+      <div style="flex:1; display:grid; grid-template-columns:1fr 1fr; gap:34px; align-content:start; min-height:0">
+        <div class="panel" style="border-color:var(--series-a)">
+          <h3 style="color:var(--series-a)">Built and running</h3>
+          <table class="spec">
+            <tr><td class="k">Design</td><td>Microarchitecture, hazard scheme, memory subsystem and the 46-row control truth table, documented</td></tr>
+            <tr><td class="k">RTL</td><td>19 Verilog modules; the machine executes all 46 encodings</td></tr>
+            <tr><td class="k">Bonus A</td><td>Branch predictor, with accuracy and cycle deltas measured</td></tr>
+          </table>
+        </div>
+        <div class="panel" style="border-color:var(--series-a)">
+          <h3 style="color:var(--series-a)">&nbsp;</h3>
+          <table class="spec">
+            <tr><td class="k">Bonus B</td><td>Interrupts. Trap entry, ISR and <span class="mono">mret</span>, all diff-tested against the reference model</td></tr>
+            <tr><td class="k">Verification</td><td>Every suite green at all four build configurations</td></tr>
+            <tr><td class="k">Synthesis</td><td>Placed and routed; setup timing met at 74 MHz on the target part</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span>
+      <p>The specification came first and the implementation followed it. <em>That order is why the schedule on the next slide is credible.</em></p>
+    </div>
+  </section>
+
+  <!-- ============ P3 DELIVERABLES ============ -->
+  <section class="slide" data-sect="01 &middot; Design" data-seg="1" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">Deliverables</p>
+      <h2>What we hand over, who owns it, and when</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1.15fr 1fr; gap:32px; padding-top:14px; align-content:start; min-height:0">
+        <div class="panel">
+          <h3>Deliverables, one owner each</h3>
+          <table class="data" style="font-size:20px">
+            <thead><tr><th style="text-align:left">Artefact</th><th style="text-align:left; width:150px">Owner</th><th style="text-align:right; width:130px">State</th></tr></thead>
+            <tbody>
+              <tr><td>Design document and control truth table</td><td class="w" style="padding-left:0">Design</td><td style="color:var(--ok)">complete</td></tr>
+              <tr><td>19 RTL modules, plain Verilog-2001</td><td class="w" style="padding-left:0">Coding</td><td style="color:var(--ok)">complete</td></tr>
+              <tr><td>Assembler and reference model</td><td class="w" style="padding-left:0">Coding</td><td style="color:var(--ok)">complete</td></tr>
+              <tr><td>Self-checking test suite</td><td class="w" style="padding-left:0">Testing</td><td style="color:var(--ok)">complete</td></tr>
+              <tr><td>Performance measurements</td><td class="w" style="padding-left:0">Testing</td><td style="color:var(--series-b)">preliminary</td></tr>
+              <tr><td>Synthesis report: fmax and utilisation</td><td class="w" style="padding-left:0">Testing</td><td style="color:var(--series-b)">one run left</td></tr>
+              <tr><td>Live demo and script</td><td class="w" style="padding-left:0">All three</td><td style="color:var(--series-b)">Sep 16</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="panel">
+            <h3>Milestones</h3>
+            <table class="spec">
+              <tr><td class="k">Sep 11&ndash;12</td><td>Apply the two timing improvements; full regression after each change</td></tr>
+              <tr><td class="k">Sep 13&ndash;14</td><td>Final synthesis run; lock the performance chapter</td></tr>
+              <tr><td class="k">Sep 15</td><td><strong>Feature freeze</strong> &mdash; bugfix and measurement only after this</td></tr>
+              <tr><td class="k">Sep 16</td><td>Demo script, waveform captures, rehearsal</td></tr>
+              <tr><td class="k">Sep 17</td><td><strong>Final presentation and demo</strong></td></tr>
+            </table>
+          </div>
+          <div class="panel" style="border-color:var(--series-b); flex:1">
+            <h3 style="color:var(--series-b)">Risks, and what we do about each</h3>
+            <table class="spec">
+              <tr><td class="k">Timing</td><td>If the two improvements do not close cleanly by Sep 14, we <strong>freeze on the 74 MHz build that is already verified</strong> rather than ship an untested faster one</td></tr>
+              <tr><td class="k">Regression</td><td>One timing change moves when a load result is available, so it can shift CPI. Every performance figure is re-measured after the freeze, not before</td></tr>
+              <tr><td class="k">Toolchain</td><td>If the instructor requires Vivado 2019.2, the RTL is plain Verilog-2001 with no IP, and a project-generation script is committed instead of a version-locked project file</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span>
+      <p data-step="2">Every deliverable has <em>exactly one owner</em>, and cross-review is by reading each other's work, not by silent edits.</p>
+    </div>
+  </section>
+  <!-- ============ MEMBER: CODING &MDASH; THE RTL, AND THE TOOLCHAIN IT NEEDED ============ -->
+  <section class="slide" data-sect="02 &middot; Implementation" data-seg="2" data-steps="1">
+    <div class="body">
+      <p class="eyebrow">Speaker 2 of 3 &middot; <span style='color:var(--ink-3)'>[ name ]</span></p>
+      <h2>Coding &mdash; the RTL, and the toolchain it needed</h2>
+      <p class="dek" style="margin-bottom:22px">The course names Mars4_5 as the simulator, but Mars executes MIPS. Building a RISC-V machine meant building the tools to assemble and check it first.</p>
+      <div style="flex:1; display:grid; grid-template-columns:1.15fr 1fr; gap:32px; align-content:start; min-height:0">
+        <div class="panel">
+          <h3>Owned end to end</h3>
+          <table class="spec"><tr><td class="k">RTL</td><td>All 19 modules: pipeline registers, datapath, hazard logic, CSR file, BHT, counters, memories, top level</td></tr><tr><td class="k">Assembler</td><td>Two-pass, all six formats, directives and pseudo-ops, emits a <span class='mono'>$readmemh</span> image</td></tr><tr><td class="k">Reference</td><td>A second implementation of the ISA in Python, emitting the commit trace</td></tr><tr><td class="k">Flows</td><td>The xsim batch flow and the non-project synthesis flow, both scripted</td></tr><tr><td class="k">Fixes</td><td>Every failure the tester raised, re-verified by their regression rather than by self-report</td></tr></table>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="tiles" style="grid-template-columns:1fr 1fr 1fr"><div class="tile"><span class="n" style="color:var(--series-a)">19</span><span class="l">RTL modules</span><span class="s">Verilog-2001</span></div><div class="tile"><span class="n" style="color:var(--ink)">861</span><span class="l">lines of assembler</span><span class="s">asm.py</span></div><div class="tile"><span class="n" style="color:var(--series-b)">589</span><span class="l">lines of ISS</span><span class="s">iss.py</span></div></div>
+          <div class="panel" style="flex:1">
+            <h3>Delivered</h3>
+            <ul style="margin:0; padding-left:22px; font-size:20px; line-height:1.4; color:var(--ink-2)"><li style="margin-bottom:10px">19 synthesizable modules, no vendor IP and no block design</li><li style="margin-bottom:10px"><span class='mono'>tools/asm.py</span> and <span class='mono'>tools/iss.py</span>, cross-validated against each other</li><li style="margin-bottom:10px"><span class='mono'>sim/run.sh</span> and <span class='mono'>vivado/synth.sh</span>, reproducible from the command line</li><li style="margin-bottom:10px">Memory mapping pinned so the synthesis numbers describe the design</li></ul>
+          </div>
+          <div class="panel" style="border-color:var(--series-a)">
+            <h3 style="color:var(--series-a)">Where to look</h3>
+            <p style="margin:0; font-size:20px; line-height:1.45; color:var(--ink-2)"><span class='mono'>rtl/</span> and <span class='mono'>tools/</span>. The machine executes all 46 encodings and places and routes at <strong>74 MHz</strong> on the target part.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>The assembler and the reference model were <em>cross-validated against each other before any RTL existed</em>, so the oracle was trustworthy on day one.</p></div>
+  </section>
+  <!-- ============ 05 FORWARDING (3 builds) ============ -->
+  <section class="slide" data-sect="02 &middot; Implementation" data-seg="2" data-hi="EX" data-steps="3">
+    <div class="body">
+      <p class="eyebrow">Data hazards</p>
+      <h2>Forwarding: two distances, one priority rule</h2>
+      <figure class="fig">
+        <svg viewBox="0 0 1700 430" role="img" aria-label="Two pipeline cycle diagrams. On the left a producer one instruction ahead forwards from the EX/MEM boundary. On the right a producer two instructions ahead forwards from the MEM/WB boundary.">
+          <defs><marker id="ahFw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--fwd)"/></marker></defs>
+
+          <g font-family="IBM Plex Mono, monospace">
+            <text x="0" y="20" font-size="18" font-weight="600" letter-spacing="1.6" fill="var(--ink-3)">DISTANCE 1 &mdash; PRODUCER IS IN MEM</text>
+            <g font-size="15" fill="var(--ink-3)" text-anchor="middle">
+              <text x="272" y="60">c1</text><text x="360" y="60">c2</text><text x="448" y="60">c3</text><text x="536" y="60">c4</text><text x="624" y="60">c5</text><text x="712" y="60">c6</text>
+            </g>
+            <line x1="228" y1="72" x2="756" y2="72" stroke="var(--rule-2)"/>
+            <text x="0" y="112" font-size="17" fill="var(--ink)">addi x5, x0, 100</text>
+            <g>
+              <rect x="230" y="88" width="84" height="38" rx="2" fill="var(--st1)"/><text x="272" y="113" font-size="15" text-anchor="middle" fill="var(--st1-ink)">IF</text>
+              <rect x="318" y="88" width="84" height="38" rx="2" fill="var(--st2)"/><text x="360" y="113" font-size="15" text-anchor="middle" fill="var(--st2-ink)">ID</text>
+              <rect x="406" y="88" width="84" height="38" rx="2" fill="var(--st3)"/><text x="448" y="113" font-size="15" text-anchor="middle" fill="var(--st3-ink)">EX</text>
+              <rect x="494" y="88" width="84" height="38" rx="2" fill="var(--st4)"/><text x="536" y="113" font-size="15" text-anchor="middle" fill="var(--st4-ink)">MEM</text>
+              <rect x="582" y="88" width="84" height="38" rx="2" fill="var(--st5)"/><text x="624" y="113" font-size="15" text-anchor="middle" fill="var(--st5-ink)">WB</text>
+            </g>
+            <text x="0" y="192" font-size="17" fill="var(--ink)">add &nbsp;x6, x5, x5</text>
+            <g>
+              <rect x="318" y="168" width="84" height="38" rx="2" fill="var(--st1)"/><text x="360" y="193" font-size="15" text-anchor="middle" fill="var(--st1-ink)">IF</text>
+              <rect x="406" y="168" width="84" height="38" rx="2" fill="var(--st2)"/><text x="448" y="193" font-size="15" text-anchor="middle" fill="var(--st2-ink)">ID</text>
+              <rect x="494" y="168" width="84" height="38" rx="2" fill="var(--st3)" stroke="var(--fwd)" stroke-width="2.5"/><text x="536" y="193" font-size="15" text-anchor="middle" fill="var(--st3-ink)">EX</text>
+              <rect x="582" y="168" width="84" height="38" rx="2" fill="var(--st4)"/><text x="624" y="193" font-size="15" text-anchor="middle" fill="var(--st4-ink)">MEM</text>
+              <rect x="670" y="168" width="84" height="38" rx="2" fill="var(--st5)"/><text x="712" y="193" font-size="15" text-anchor="middle" fill="var(--st5-ink)">WB</text>
+            </g>
+            <path d="M536 128 L536 164" stroke="var(--fwd)" stroke-width="2.5" marker-end="url(#ahFw)"/>
+            <text x="556" y="152" font-size="15" font-weight="600" fill="var(--fwd)">fwd = 2'b10</text>
+            <text x="0" y="240" font-size="15" fill="var(--ink-3)">the result exists at the EX/MEM boundary</text>
+          </g>
+
+          <g data-step="2">
+            <line x1="828" y1="0" x2="828" y2="300" stroke="var(--rule)"/>
+            <g font-family="IBM Plex Mono, monospace" transform="translate(890 0)">
+              <text x="0" y="20" font-size="18" font-weight="600" letter-spacing="1.6" fill="var(--ink-3)">DISTANCE 2 &mdash; PRODUCER IS IN WB</text>
+              <g font-size="15" fill="var(--ink-3)" text-anchor="middle">
+                <text x="252" y="60">c1</text><text x="340" y="60">c2</text><text x="428" y="60">c3</text><text x="516" y="60">c4</text><text x="604" y="60">c5</text><text x="692" y="60">c6</text>
+              </g>
+              <line x1="208" y1="72" x2="736" y2="72" stroke="var(--rule-2)"/>
+              <text x="0" y="112" font-size="17" fill="var(--ink)">addi x5, x0, 100</text>
+              <g>
+                <rect x="210" y="88" width="84" height="38" rx="2" fill="var(--st1)"/><text x="252" y="113" font-size="15" text-anchor="middle" fill="var(--st1-ink)">IF</text>
+                <rect x="298" y="88" width="84" height="38" rx="2" fill="var(--st2)"/><text x="340" y="113" font-size="15" text-anchor="middle" fill="var(--st2-ink)">ID</text>
+                <rect x="386" y="88" width="84" height="38" rx="2" fill="var(--st3)"/><text x="428" y="113" font-size="15" text-anchor="middle" fill="var(--st3-ink)">EX</text>
+                <rect x="474" y="88" width="84" height="38" rx="2" fill="var(--st4)"/><text x="516" y="113" font-size="15" text-anchor="middle" fill="var(--st4-ink)">MEM</text>
+                <rect x="562" y="88" width="84" height="38" rx="2" fill="var(--st5)"/><text x="604" y="113" font-size="15" text-anchor="middle" fill="var(--st5-ink)">WB</text>
+              </g>
+              <text x="0" y="152" font-size="17" fill="var(--ink-3)">nop</text>
+              <g opacity=".5">
+                <rect x="298" y="132" width="84" height="30" rx="2" fill="var(--st1)"/>
+                <rect x="386" y="132" width="84" height="30" rx="2" fill="var(--st2)"/>
+                <rect x="474" y="132" width="84" height="30" rx="2" fill="var(--st3)"/>
+                <rect x="562" y="132" width="84" height="30" rx="2" fill="var(--st4)"/>
+                <rect x="650" y="132" width="84" height="30" rx="2" fill="var(--st5)"/>
+              </g>
+              <text x="0" y="222" font-size="17" fill="var(--ink)">add &nbsp;x6, x5, x5</text>
+              <g>
+                <rect x="386" y="198" width="84" height="38" rx="2" fill="var(--st1)"/><text x="428" y="223" font-size="15" text-anchor="middle" fill="var(--st1-ink)">IF</text>
+                <rect x="474" y="198" width="84" height="38" rx="2" fill="var(--st2)"/><text x="516" y="223" font-size="15" text-anchor="middle" fill="var(--st2-ink)">ID</text>
+                <rect x="562" y="198" width="84" height="38" rx="2" fill="var(--st3)" stroke="var(--fwd)" stroke-width="2.5"/><text x="604" y="223" font-size="15" text-anchor="middle" fill="var(--st3-ink)">EX</text>
+                <rect x="650" y="198" width="84" height="38" rx="2" fill="var(--st4)"/><text x="692" y="223" font-size="15" text-anchor="middle" fill="var(--st4-ink)">MEM</text>
+              </g>
+              <path d="M604 128 L604 194" stroke="var(--fwd)" stroke-width="2.5" marker-end="url(#ahFw)"/>
+              <text x="624" y="172" font-size="15" font-weight="600" fill="var(--fwd)">fwd = 2'b01</text>
+              <text x="0" y="270" font-size="15" fill="var(--ink-3)">this path also carries load data</text>
+            </g>
+          </g>
+
+          <g data-step="3" transform="translate(0 322)">
+            <rect x="0" y="0" width="1700" height="100" rx="3" fill="var(--tint-b)" stroke="var(--fwd)"/>
+            <text x="26" y="34" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="600" letter-spacing="1.4" fill="var(--fwd)">PRIORITY &mdash; WHEN BOTH MATCH, EX/MEM WINS</text>
+            <text x="26" y="66" font-family="IBM Plex Sans, sans-serif" font-size="20" fill="var(--ink)">The instruction in MEM is the <tspan font-weight="600">newer</tspan> writer, so its value is the one the architecture says you read. Testing MEM/WB first resurrects the stale value.</text>
+            <text x="26" y="90" font-family="IBM Plex Mono, monospace" font-size="17" fill="var(--ink-2)">x5 = 100 &nbsp;then&nbsp; x5 = x5 + 1 &nbsp;then&nbsp; read x5 &nbsp;&nbsp; must see 101, while 100 is still sitting in MEM/WB</text>
+          </g>
+        </svg>
+        <figcaption>A third distance is handled inside the register file: a WB to ID internal bypass returns the value being written in the same cycle it is read.</figcaption>
+      </figure>
+    </div>
+    <div class="key"><span class="bar"></span><p>A producer whose destination is <em>x0</em> wrote nothing, so it is never forwarded. Otherwise x0 would read non-zero for exactly one instruction.</p></div>
+  </section>
+
+  <!-- ============ 06 STALL AND FLUSH (3 builds) ============ -->
+  <section class="slide" data-sect="02 &middot; Implementation" data-seg="2" data-hi="ID,EX" data-steps="3">
+    <div class="body">
+      <p class="eyebrow">The two hazards forwarding cannot fix</p>
+      <h2>One cycle for a load-use, two for a taken branch</h2>
+      <figure class="fig">
+        <svg viewBox="0 0 1700 400" role="img" aria-label="Left: a load-use interlock stalls the consumer for one cycle before the MEM/WB bypass delivers the loaded value. Right: a taken conditional branch resolved in EX kills the two instructions already fetched behind it.">
+          <defs><marker id="ahF2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--fwd)"/></marker></defs>
+
+          <g font-family="IBM Plex Mono, monospace">
+            <text x="0" y="20" font-size="18" font-weight="600" letter-spacing="1.6" fill="var(--stall)">LOAD-USE INTERLOCK &mdash; 1 STALL CYCLE</text>
+            <g font-size="14" fill="var(--ink-3)" text-anchor="middle">
+              <text x="262" y="56">c1</text><text x="338" y="56">c2</text><text x="414" y="56">c3</text><text x="490" y="56">c4</text><text x="566" y="56">c5</text><text x="642" y="56">c6</text><text x="718" y="56">c7</text>
+            </g>
+            <line x1="224" y1="66" x2="756" y2="66" stroke="var(--rule-2)"/>
+            <text x="0" y="104" font-size="16" fill="var(--ink)">lw &nbsp;x7, 0(x5)</text>
+            <g font-size="14" text-anchor="middle">
+              <rect x="226" y="82" width="72" height="34" rx="2" fill="var(--st1)"/><text x="262" y="104" fill="var(--st1-ink)">IF</text>
+              <rect x="302" y="82" width="72" height="34" rx="2" fill="var(--st2)"/><text x="338" y="104" fill="var(--st2-ink)">ID</text>
+              <rect x="378" y="82" width="72" height="34" rx="2" fill="var(--st3)"/><text x="414" y="104" fill="var(--st3-ink)">EX</text>
+              <rect x="454" y="82" width="72" height="34" rx="2" fill="var(--st4)"/><text x="490" y="104" fill="var(--st4-ink)">MEM</text>
+              <rect x="530" y="82" width="72" height="34" rx="2" fill="var(--st5)"/><text x="566" y="104" fill="var(--st5-ink)">WB</text>
+            </g>
+            <text x="0" y="164" font-size="16" fill="var(--ink)">add x8, x7, x0</text>
+            <g font-size="14" text-anchor="middle">
+              <rect x="302" y="142" width="72" height="34" rx="2" fill="var(--st1)"/><text x="338" y="164" fill="var(--st1-ink)">IF</text>
+              <rect x="378" y="142" width="72" height="34" rx="2" fill="var(--st2)"/><text x="414" y="164" fill="var(--st2-ink)">ID</text>
+              <rect x="454" y="142" width="72" height="34" rx="2" fill="var(--stall)"/><text x="490" y="164" fill="#fff">ID</text>
+              <rect x="530" y="142" width="72" height="34" rx="2" fill="var(--st3)" stroke="var(--fwd)" stroke-width="2.5"/><text x="566" y="164" fill="var(--st3-ink)">EX</text>
+              <rect x="606" y="142" width="72" height="34" rx="2" fill="var(--st4)"/><text x="642" y="164" fill="var(--st4-ink)">MEM</text>
+              <rect x="682" y="142" width="72" height="34" rx="2" fill="var(--st5)"/><text x="718" y="164" fill="var(--st5-ink)">WB</text>
+            </g>
+            <text x="0" y="224" font-size="16" fill="var(--ink)">sub x9, x8, x1</text>
+            <g font-size="14" text-anchor="middle">
+              <rect x="378" y="202" width="72" height="34" rx="2" fill="var(--st1)"/><text x="414" y="224" fill="var(--st1-ink)">IF</text>
+              <rect x="454" y="202" width="72" height="34" rx="2" fill="var(--stall)"/><text x="490" y="224" fill="#fff">IF</text>
+              <rect x="530" y="202" width="72" height="34" rx="2" fill="var(--st2)"/><text x="566" y="224" fill="var(--st2-ink)">ID</text>
+              <rect x="606" y="202" width="72" height="34" rx="2" fill="var(--st3)"/><text x="642" y="224" fill="var(--st3-ink)">EX</text>
+              <rect x="682" y="202" width="72" height="34" rx="2" fill="var(--st4)"/><text x="718" y="224" fill="var(--st4-ink)">MEM</text>
+            </g>
+            <path d="M566 120 L566 138" stroke="var(--fwd)" stroke-width="2.5" marker-end="url(#ahF2)"/>
+            <text x="0" y="268" font-size="15" fill="var(--stall)">violet = held. PC and IF/ID freeze, ID/EX takes a bubble.</text>
+            <text x="0" y="292" font-size="15" fill="var(--ink-3)">One cycle is always enough. By then the load is in WB.</text>
+          </g>
+
+          <g data-step="2">
+            <line x1="828" y1="0" x2="828" y2="320" stroke="var(--rule)"/>
+            <g font-family="IBM Plex Mono, monospace" transform="translate(890 0)">
+              <text x="0" y="20" font-size="18" font-weight="600" letter-spacing="1.6" fill="var(--flush)">TAKEN BRANCH &mdash; 2 BUBBLES</text>
+              <g font-size="14" fill="var(--ink-3)" text-anchor="middle">
+                <text x="262" y="56">c1</text><text x="338" y="56">c2</text><text x="414" y="56">c3</text><text x="490" y="56">c4</text><text x="566" y="56">c5</text><text x="642" y="56">c6</text>
+              </g>
+              <line x1="224" y1="66" x2="680" y2="66" stroke="var(--rule-2)"/>
+              <text x="0" y="104" font-size="16" fill="var(--ink)">beq (taken)</text>
+              <g font-size="14" text-anchor="middle">
+                <rect x="226" y="82" width="72" height="34" rx="2" fill="var(--st1)"/><text x="262" y="104" fill="var(--st1-ink)">IF</text>
+                <rect x="302" y="82" width="72" height="34" rx="2" fill="var(--st2)"/><text x="338" y="104" fill="var(--st2-ink)">ID</text>
+                <rect x="378" y="82" width="72" height="34" rx="2" fill="var(--st3)" stroke="var(--flush)" stroke-width="2.5"/><text x="414" y="104" fill="var(--st3-ink)">EX</text>
+                <rect x="454" y="82" width="72" height="34" rx="2" fill="var(--st4)"/><text x="490" y="104" fill="var(--st4-ink)">MEM</text>
+                <rect x="530" y="82" width="72" height="34" rx="2" fill="var(--st5)"/><text x="566" y="104" fill="var(--st5-ink)">WB</text>
+              </g>
+              <text x="428" y="76" font-size="13" fill="var(--flush)">resolved here</text>
+              <text x="0" y="164" font-size="16" fill="var(--ink-3)">branch + 4</text>
+              <g font-size="14" text-anchor="middle">
+                <rect x="302" y="142" width="72" height="34" rx="2" fill="var(--st1)"/><text x="338" y="164" fill="var(--st1-ink)">IF</text>
+                <rect x="378" y="142" width="72" height="34" rx="2" fill="var(--st2)"/><text x="414" y="164" fill="var(--st2-ink)">ID</text>
+                <rect x="454" y="142" width="72" height="34" rx="2" fill="none" stroke="var(--flush)" stroke-width="2" stroke-dasharray="4 3"/>
+                <text x="490" y="166" font-size="17" fill="var(--flush)">&#10005;</text>
+              </g>
+              <text x="0" y="224" font-size="16" fill="var(--ink-3)">branch + 8</text>
+              <g font-size="14" text-anchor="middle">
+                <rect x="378" y="202" width="72" height="34" rx="2" fill="var(--st1)"/><text x="414" y="224" fill="var(--st1-ink)">IF</text>
+                <rect x="454" y="202" width="72" height="34" rx="2" fill="none" stroke="var(--flush)" stroke-width="2" stroke-dasharray="4 3"/>
+                <text x="490" y="226" font-size="17" fill="var(--flush)">&#10005;</text>
+              </g>
+              <text x="0" y="284" font-size="16" fill="var(--ink)">target</text>
+              <g font-size="14" text-anchor="middle">
+                <rect x="454" y="262" width="72" height="34" rx="2" fill="var(--st1)"/><text x="490" y="284" fill="var(--st1-ink)">IF</text>
+                <rect x="530" y="262" width="72" height="34" rx="2" fill="var(--st2)"/><text x="566" y="284" fill="var(--st2-ink)">ID</text>
+                <rect x="606" y="262" width="72" height="34" rx="2" fill="var(--st3)"/><text x="642" y="284" fill="var(--st3-ink)">EX</text>
+              </g>
+            </g>
+          </g>
+
+          <g data-step="3" transform="translate(0 340)">
+            <rect x="0" y="0" width="1700" height="56" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+            <g font-family="IBM Plex Mono, monospace" font-size="17">
+              <text x="26" y="34" fill="var(--ink-3)" letter-spacing="1.2">COST</text>
+              <text x="110" y="34" fill="var(--ink)">load-use <tspan font-weight="600">1 stall</tspan></text>
+              <text x="330" y="34" fill="var(--ink)">jal <tspan font-weight="600">1 bubble</tspan></text>
+              <text x="520" y="34" fill="var(--ink)">taken branch <tspan font-weight="600">2</tspan></text>
+              <text x="770" y="34" fill="var(--ink)">jalr <tspan font-weight="600">2</tspan></text>
+              <text x="920" y="34" fill="var(--ink)">ecall / interrupt / mret <tspan font-weight="600">2</tspan></text>
+              <text x="1320" y="34" fill="var(--ink-3)">wrong-path slots never write and never retire</text>
+            </g>
+          </g>
+        </svg>
+        <figcaption><span class="mono">jal</span> costs only one bubble because its target is <span class="mono">PC + immJ</span>, known at decode with no register read.</figcaption>
+      </figure>
+    </div>
+    <div class="key"><span class="bar"></span><p>A redirect always overrides a stall: the instruction that raised the stall is <em>being killed anyway</em>, so waiting for it would deadlock the redirect.</p></div>
+  </section>
+
+  <!-- ============ 07 BHT (3 builds) ============ -->
+  <section class="slide" data-sect="02 &middot; Implementation" data-seg="2" data-hi="IF,ID,EX" data-steps="3">
+    <div class="body">
+      <p class="eyebrow">Bonus A &mdash; branch prediction</p>
+      <h2>64 two-bit counters, and an honest cost table</h2>
+      <div style="flex:1; display:flex; flex-direction:column; gap:22px; min-height:0">
+        <figure class="fig" style="flex:none">
+          <svg viewBox="0 0 1700 236" role="img" aria-label="The 2-bit saturating counter state machine: four states from strongly not taken to strongly taken, moving right on a taken branch and left on a not-taken branch, saturating at both ends. The prediction is the high bit.">
+            <defs>
+              <marker id="ahT2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--series-a)"/></marker>
+              <marker id="ahN2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker>
+            </defs>
+            <line x1="850" y1="18" x2="850" y2="218" stroke="var(--rule-2)" stroke-dasharray="6 5"/>
+            <text x="836" y="212" font-family="IBM Plex Mono, monospace" font-size="15" text-anchor="end" fill="var(--ink-3)">predict NOT TAKEN</text>
+            <text x="864" y="212" font-family="IBM Plex Mono, monospace" font-size="15" fill="var(--series-a)">predict TAKEN</text>
+            <g font-family="IBM Plex Mono, monospace" text-anchor="middle">
+              <rect x="330" y="82" width="188" height="72" rx="3" fill="var(--surface)" stroke="var(--rule-2)" stroke-width="2"/>
+              <text x="424" y="116" font-size="26" font-weight="600" fill="var(--ink)">00</text>
+              <text x="424" y="139" font-size="14" fill="var(--ink-3)">strongly not taken</text>
+              <rect x="590" y="82" width="188" height="72" rx="3" fill="var(--surface)" stroke="var(--series-b)" stroke-width="2"/>
+              <text x="684" y="116" font-size="26" font-weight="600" fill="var(--ink)">01</text>
+              <text x="684" y="139" font-size="14" fill="var(--ink-3)">weakly not taken</text>
+              <rect x="922" y="82" width="188" height="72" rx="3" fill="var(--tint-a)" stroke="var(--series-a)" stroke-width="2"/>
+              <text x="1016" y="116" font-size="26" font-weight="600" fill="var(--ink)">10</text>
+              <text x="1016" y="139" font-size="14" fill="var(--ink-3)">weakly taken</text>
+              <rect x="1182" y="82" width="188" height="72" rx="3" fill="var(--tint-a)" stroke="var(--series-a)" stroke-width="2"/>
+              <text x="1276" y="116" font-size="26" font-weight="600" fill="var(--ink)">11</text>
+              <text x="1276" y="139" font-size="14" fill="var(--ink-3)">strongly taken</text>
+            </g>
+            <g stroke="var(--series-a)" stroke-width="2" fill="none">
+              <path d="M518 100 L586 100" marker-end="url(#ahT2)"/>
+              <path d="M778 100 L918 100" marker-end="url(#ahT2)"/>
+              <path d="M1110 100 L1178 100" marker-end="url(#ahT2)"/>
+              <path d="M1370 100 C1416 100 1416 60 1370 60 L1360 60" marker-end="url(#ahT2)"/>
+            </g>
+            <text x="552" y="76" font-family="IBM Plex Mono, monospace" font-size="14" text-anchor="middle" fill="var(--series-a)">taken</text>
+            <text x="848" y="76" font-family="IBM Plex Mono, monospace" font-size="14" text-anchor="middle" fill="var(--series-a)">taken</text>
+            <text x="1144" y="76" font-family="IBM Plex Mono, monospace" font-size="14" text-anchor="middle" fill="var(--series-a)">taken</text>
+            <text x="1424" y="48" font-family="IBM Plex Mono, monospace" font-size="13" fill="var(--series-a)">saturates</text>
+            <g stroke="var(--ink-3)" stroke-width="2" fill="none">
+              <path d="M586 136 L518 136" marker-end="url(#ahN2)"/>
+              <path d="M918 136 L778 136" marker-end="url(#ahN2)"/>
+              <path d="M1178 136 L1110 136" marker-end="url(#ahN2)"/>
+              <path d="M330 136 C284 136 284 176 330 176 L340 176" marker-end="url(#ahN2)"/>
+            </g>
+            <text x="552" y="172" font-family="IBM Plex Mono, monospace" font-size="14" text-anchor="middle" fill="var(--ink-3)">not taken</text>
+            <text x="848" y="172" font-family="IBM Plex Mono, monospace" font-size="14" text-anchor="middle" fill="var(--ink-3)">not taken</text>
+            <text x="1144" y="172" font-family="IBM Plex Mono, monospace" font-size="14" text-anchor="middle" fill="var(--ink-3)">not taken</text>
+            <text x="196" y="164" font-family="IBM Plex Mono, monospace" font-size="13" fill="var(--ink-3)">saturates</text>
+            <path d="M684 46 L684 78" stroke="var(--series-b)" stroke-width="2" marker-end="url(#ahT2)" fill="none"/>
+            <text x="684" y="36" font-family="IBM Plex Mono, monospace" font-size="14" text-anchor="middle" fill="var(--series-b)">reset state</text>
+            <text x="20" y="34" font-family="IBM Plex Mono, monospace" font-size="16" fill="var(--ink-2)">64 entries</text>
+            <text x="20" y="58" font-family="IBM Plex Mono, monospace" font-size="16" fill="var(--ink-2)">index pc[7:2]</text>
+            <text x="20" y="82" font-family="IBM Plex Mono, monospace" font-size="16" fill="var(--ink-2)">untagged</text>
+            <text x="20" y="112" font-family="IBM Plex Sans, sans-serif" font-size="14" fill="var(--ink-3)">prediction = state[1]</text>
+          </svg>
+        </figure>
+        <div style="display:grid; grid-template-columns:1.25fr 1fr; gap:32px">
+          <div class="panel" data-step="2">
+            <h3>What it costs, by outcome</h3>
+            <table class="data">
+              <thead><tr><th>Prediction</th><th>Outcome</th><th>Bubbles</th><th style="text-align:left;padding-left:30px">Why</th></tr></thead>
+              <tbody>
+                <tr><td>not taken</td><td>not taken</td><td class="num" style="color:var(--ok);font-weight:600">0</td><td class="w">the fall-through was already being fetched</td></tr>
+                <tr><td>taken</td><td>taken</td><td class="num" style="color:var(--series-a);font-weight:600">1</td><td class="w">the ID redirect kills one instruction</td></tr>
+                <tr><td>not taken</td><td>taken</td><td class="num" style="color:var(--flush);font-weight:600">2</td><td class="w">EX redirect kills ID and IF</td></tr>
+                <tr><td>taken</td><td>not taken</td><td class="num" style="color:var(--flush);font-weight:600">2</td><td class="w">wrong target fetched, then re-fetch the fall-through</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="panel" data-step="3">
+            <h3>Where each step happens</h3>
+            <table class="spec">
+              <tr><td class="k">Lookup &mdash; IF</td><td>indexed by the fetch PC, in parallel with the instruction fetch</td></tr>
+              <tr><td class="k">Carry &mdash; IF/ID</td><td>the counter state travels with the instruction</td></tr>
+              <tr><td class="k">Act &mdash; ID</td><td>redirect to <span class="mono">PC + immB</span>, the same 1-bubble path <span class="mono">jal</span> uses</td></tr>
+              <tr><td class="k">Resolve &mdash; EX</td><td>compare against the real outcome; flush 2 on a mispredict</td></tr>
+              <tr><td class="k">Update &mdash; EX</td><td>saturating increment or decrement</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>There is no target buffer. The target is <span class="mono">PC + immB</span>, which ID already computes. That saves a tagged CAM and <em>costs one bubble on a correct taken prediction</em>.</p></div>
+  </section>
+
+  <!-- ============ 08 INTERRUPTS (3 builds) ============ -->
+  <section class="slide" data-sect="02 &middot; Implementation" data-seg="2" data-hi="EX" data-steps="3">
+    <div class="body">
+      <p class="eyebrow">Bonus B &mdash; interrupts</p>
+      <h2>The trap point is EX, so mepc is always a real PC</h2>
+      <figure class="fig">
+        <svg viewBox="0 0 1700 400" role="img" aria-label="Interrupt entry timeline. The instruction in EX when the interrupt is sampled is squashed rather than retired; the two younger instructions are killed; the two older instructions still retire; the handler begins fetching from mtvec.">
+          <g font-family="IBM Plex Mono, monospace">
+            <g font-size="14" fill="var(--ink-3)" text-anchor="middle">
+              <text x="392" y="34">c1</text><text x="500" y="34">c2</text><text x="608" y="34">c3</text><text x="716" y="34">c4</text><text x="824" y="34">c5</text><text x="932" y="34">c6</text><text x="1040" y="34">c7</text>
+            </g>
+            <line x1="340" y1="44" x2="1096" y2="44" stroke="var(--rule-2)"/>
+            <g font-size="14" text-anchor="middle">
+              <text x="0" y="76" font-size="16" text-anchor="start" fill="var(--ink)">I(n&minus;2)</text>
+              <rect x="342" y="56" width="100" height="32" rx="2" fill="var(--st3)"/><text x="392" y="77" fill="var(--st3-ink)">EX</text>
+              <rect x="450" y="56" width="100" height="32" rx="2" fill="var(--st4)"/><text x="500" y="77" fill="var(--st4-ink)">MEM</text>
+              <rect x="558" y="56" width="100" height="32" rx="2" fill="var(--st5)"/><text x="608" y="77" fill="var(--st5-ink)">WB</text>
+              <text x="1120" y="77" font-size="15" text-anchor="start" fill="var(--ok)">retires normally</text>
+              <text x="0" y="124" font-size="16" text-anchor="start" fill="var(--ink)">I(n&minus;1)</text>
+              <rect x="342" y="104" width="100" height="32" rx="2" fill="var(--st2)"/><text x="392" y="125" fill="var(--st2-ink)">ID</text>
+              <rect x="450" y="104" width="100" height="32" rx="2" fill="var(--st3)"/><text x="500" y="125" fill="var(--st3-ink)">EX</text>
+              <rect x="558" y="104" width="100" height="32" rx="2" fill="var(--st4)"/><text x="608" y="125" fill="var(--st4-ink)">MEM</text>
+              <rect x="666" y="104" width="100" height="32" rx="2" fill="var(--st5)"/><text x="716" y="125" fill="var(--st5-ink)">WB</text>
+              <text x="1120" y="125" font-size="15" text-anchor="start" fill="var(--ok)">retires normally</text>
+              <text x="0" y="172" font-size="16" text-anchor="start" fill="var(--flush)" font-weight="600">I(n)</text>
+              <rect x="342" y="152" width="100" height="32" rx="2" fill="var(--st1)"/><text x="392" y="173" fill="var(--st1-ink)">IF</text>
+              <rect x="450" y="152" width="100" height="32" rx="2" fill="var(--st2)"/><text x="500" y="173" fill="var(--st2-ink)">ID</text>
+              <rect x="558" y="152" width="100" height="32" rx="2" fill="var(--st3)" stroke="var(--flush)" stroke-width="2.5"/><text x="608" y="173" fill="var(--st3-ink)">EX</text>
+              <rect x="666" y="152" width="100" height="32" rx="2" fill="none" stroke="var(--flush)" stroke-width="2" stroke-dasharray="4 3"/>
+              <text x="716" y="175" font-size="17" fill="var(--flush)">&#10005;</text>
+              <text x="1120" y="173" font-size="15" text-anchor="start" fill="var(--flush)" font-weight="600">SQUASHED &mdash; never retires, never traced</text>
+              <text x="0" y="220" font-size="16" text-anchor="start" fill="var(--ink-3)">I(n+1)</text>
+              <rect x="450" y="200" width="100" height="32" rx="2" fill="var(--st1)"/><text x="500" y="221" fill="var(--st1-ink)">IF</text>
+              <rect x="558" y="200" width="100" height="32" rx="2" fill="var(--st2)"/><text x="608" y="221" fill="var(--st2-ink)">ID</text>
+              <rect x="666" y="200" width="100" height="32" rx="2" fill="none" stroke="var(--flush)" stroke-width="2" stroke-dasharray="4 3"/>
+              <text x="716" y="223" font-size="17" fill="var(--flush)">&#10005;</text>
+              <text x="1120" y="221" font-size="15" text-anchor="start" fill="var(--ink-3)">killed</text>
+              <text x="0" y="268" font-size="16" text-anchor="start" fill="var(--ink-3)">I(n+2)</text>
+              <rect x="558" y="248" width="100" height="32" rx="2" fill="var(--st1)"/><text x="608" y="269" fill="var(--st1-ink)">IF</text>
+              <rect x="666" y="248" width="100" height="32" rx="2" fill="none" stroke="var(--flush)" stroke-width="2" stroke-dasharray="4 3"/>
+              <text x="716" y="271" font-size="17" fill="var(--flush)">&#10005;</text>
+              <text x="1120" y="269" font-size="15" text-anchor="start" fill="var(--ink-3)">killed</text>
+              <text x="0" y="316" font-size="16" text-anchor="start" fill="var(--series-a)" font-weight="600">ISR[0]</text>
+              <rect x="666" y="296" width="100" height="32" rx="2" fill="var(--st1)"/><text x="716" y="317" fill="var(--st1-ink)">IF</text>
+              <rect x="774" y="296" width="100" height="32" rx="2" fill="var(--st2)"/><text x="824" y="317" fill="var(--st2-ink)">ID</text>
+              <rect x="882" y="296" width="100" height="32" rx="2" fill="var(--st3)"/><text x="932" y="317" fill="var(--st3-ink)">EX</text>
+              <rect x="990" y="296" width="100" height="32" rx="2" fill="var(--st4)"/><text x="1040" y="317" fill="var(--st4-ink)">MEM</text>
+              <text x="1120" y="317" font-size="15" text-anchor="start" fill="var(--series-a)">handler at mtvec</text>
+            </g>
+            <g data-step="2">
+              <rect x="556" y="44" width="104" height="290" fill="var(--tint-b)"/>
+              <line x1="608" y1="44" x2="608" y2="334" stroke="var(--fwd)" stroke-width="2" stroke-dasharray="5 4"/>
+              <text x="608" y="360" font-size="15" text-anchor="middle" fill="var(--fwd)" font-weight="600">irq sampled with a valid instruction in EX</text>
+              <text x="608" y="382" font-size="14" text-anchor="middle" fill="var(--ink-2)">mepc &larr; PC of I(n) &nbsp;&middot;&nbsp; mcause &larr; 0x8000000B &nbsp;&middot;&nbsp; MPIE &larr; MIE, MIE &larr; 0 &nbsp;&middot;&nbsp; PC &larr; mtvec</text>
+            </g>
+          </g>
+        </svg>
+      </figure>
+      <div data-step="3" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:26px; padding-top:8px">
+        <div class="panel" style="border-color:var(--series-b)">
+          <h3 style="color:var(--series-b)">ecall &mdash; synchronous</h3>
+          <p style="margin:0;font-size:21px;line-height:1.5;color:var(--ink-2)"><span class="mono" style="color:var(--ink)">mcause = 11</span>. mepc points <strong>at the ecall</strong>, which has not completed. The handler <strong>must add 4</strong> before <span class="mono">mret</span>, or the ecall re-executes forever.</p>
+        </div>
+        <div class="panel" style="border-color:var(--series-a)">
+          <h3 style="color:var(--series-a)">Interrupt &mdash; asynchronous</h3>
+          <p style="margin:0;font-size:21px;line-height:1.5;color:var(--ink-2)"><span class="mono" style="color:var(--ink)">mcause = 0x8000000B</span>. mepc points at an instruction that <strong>never executed</strong>. The handler <strong>must not add 4</strong>. <span class="mono">mret</span> re-runs it.</p>
+        </div>
+        <div class="panel">
+          <h3>Level, not pulse</h3>
+          <p style="margin:0;font-size:21px;line-height:1.5;color:var(--ink-2)"><span class="mono" style="color:var(--ink)">irq</span> is qualified by <span class="mono">mstatus.MIE</span> and <span class="mono">mie.MEIE</span>. A request raised inside the handler is <strong>held, not lost</strong>, and taken as soon as <span class="mono">mret</span> restores MIE.</p>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>That asymmetry, <em>ecall advances mepc and an interrupt must not</em>, is the single most common trap-handling bug. We call it out rather than bury it.</p></div>
+  </section>
+
+  <!-- ============ 09 SYNTHESIS (3 builds) ============ -->
+  <section class="slide" data-sect="02 &middot; Implementation" data-seg="2" data-hi="MEM,WB,EX" data-steps="3">
+    <div class="body">
+      <p class="eyebrow">Synthesis &mdash; Vivado 2026.1, xc7a35tcpg236-1, post place-and-route</p>
+      <h2>Setup timing met at 74 MHz</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1fr 1.35fr; gap:32px; grid-template-rows:auto 1fr; padding-top:10px; min-height:0">
+        <div class="tiles" style="grid-template-columns:1fr 1fr">
+          <div class="tile"><span class="n">1,461</span><span class="l">LUTs</span><span class="s">7.0 % of the device</span></div>
+          <div class="tile"><span class="n">819</span><span class="l">flip-flops</span><span class="s">2.0 % of the device</span></div>
+          <div class="tile"><span class="n">2</span><span class="l">block RAMs</span><span class="s">IMEM + DMEM, 4 % of 50</span></div>
+          <div class="tile"><span class="n">44</span><span class="l">LUTs as memory</span><span class="s">the 32x32 register file</span></div>
+        </div>
+        <div class="panel" data-step="2">
+          <h3>Constraint sweep &mdash; where it closes</h3>
+          <table class="data">
+            <thead><tr><th>Configuration</th><th>Period</th><th>WNS</th><th>Failing</th><th>Result</th></tr></thead>
+            <tbody>
+              <tr><td>base machine</td><td class="num">10.0 ns</td><td class="num">&minus;2.483</td><td class="num">423</td><td style="color:var(--flush)">not met</td></tr>
+              <tr><td>full design</td><td class="num">10.0 ns</td><td class="num">&minus;3.235</td><td class="num">555</td><td style="color:var(--flush)">not met</td></tr>
+              <tr><td>full design</td><td class="num">12.5 ns</td><td class="num">&minus;0.755</td><td class="num">306</td><td style="color:var(--flush)">not met</td></tr>
+              <tr class="hi"><td>full design</td><td class="num">13.5 ns</td><td class="num">+0.052</td><td class="num">0</td><td style="color:var(--ok)">met &mdash; 74 MHz</td></tr>
+            </tbody>
+          </table>
+          <p style="margin:16px 0 0;font-size:19px;color:var(--ink-2);line-height:1.45">The three points agree to within 1.2 % on <span class="mono">1/(T &minus; WNS)</span>. The speed is a property of the design, not of the constraint it was asked to meet. Register-to-register hold is met at every point.</p>
+        </div>
+        <figure class="fig" data-step="3" style="grid-column:1 / -1; flex:none">
+          <svg viewBox="0 0 1700 190" role="img" aria-label="The critical path as a six-hop chain, from the data memory block RAM clock-to-output through lane extension, the forwarding mux, the branch comparator and the redirect logic into the program counter's clock enable.">
+            <defs><marker id="ahC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker></defs>
+            <text x="0" y="20" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="600" letter-spacing="1.4" fill="var(--ink-3)">CRITICAL PATH &mdash; A LOAD FEEDING A BRANCH</text>
+            <g font-family="IBM Plex Mono, monospace" font-size="14">
+              <rect x="0" y="42" width="262" height="80" rx="3" fill="var(--tint-b)" stroke="var(--fwd)" stroke-width="2"/>
+              <text x="16" y="68" fill="var(--ink)">DMEM block RAM</text>
+              <text x="16" y="88" fill="var(--ink)">clock to output</text>
+              <text x="16" y="112" font-size="20" font-weight="600" fill="var(--fwd)">2.454 ns</text>
+              <path d="M262 82 L286 82" stroke="var(--ink-3)" stroke-width="1.5" marker-end="url(#ahC)"/>
+              <rect x="290" y="42" width="262" height="80" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <text x="306" y="68" fill="var(--ink)">byte-lane select</text>
+              <text x="306" y="88" fill="var(--ink)">+ sign extension</text>
+              <text x="306" y="110" font-size="13" fill="var(--ink-3)">in WB &middot; 2 x LUT6</text>
+              <path d="M552 82 L576 82" stroke="var(--ink-3)" stroke-width="1.5" marker-end="url(#ahC)"/>
+              <rect x="580" y="42" width="262" height="80" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <text x="596" y="68" fill="var(--ink)">MEM/WB to EX</text>
+              <text x="596" y="88" fill="var(--ink)">forwarding mux</text>
+              <text x="596" y="110" font-size="13" fill="var(--ink-3)">load result into a branch</text>
+              <path d="M842 82 L866 82" stroke="var(--ink-3)" stroke-width="1.5" marker-end="url(#ahC)"/>
+              <rect x="870" y="42" width="262" height="80" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <text x="886" y="68" fill="var(--ink)">branch comparator</text>
+              <text x="886" y="88" fill="var(--ink)">branch_unit.v</text>
+              <text x="886" y="110" font-size="13" fill="var(--ink-3)">3 x CARRY4</text>
+              <path d="M1132 82 L1156 82" stroke="var(--ink-3)" stroke-width="1.5" marker-end="url(#ahC)"/>
+              <rect x="1160" y="42" width="262" height="80" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+              <text x="1176" y="68" fill="var(--ink)">redirect / flush</text>
+              <text x="1176" y="88" fill="var(--ink)">reduction</text>
+              <path d="M1422 82 L1446 82" stroke="var(--ink-3)" stroke-width="1.5" marker-end="url(#ahC)"/>
+              <rect x="1450" y="42" width="250" height="80" rx="3" fill="var(--surface)" stroke="var(--series-a)" stroke-width="2"/>
+              <text x="1466" y="68" fill="var(--ink)">PC register</text>
+              <text x="1466" y="88" fill="var(--ink)">clock enable</text>
+              <text x="1466" y="110" font-size="13" fill="var(--series-a)">endpoint</text>
+            </g>
+            <g font-family="IBM Plex Mono, monospace" font-size="17">
+              <text x="0" y="164" fill="var(--ink)"><tspan font-weight="600">12.982 ns</tspan> total</text>
+              <text x="230" y="164" fill="var(--ink-2)">15 logic levels</text>
+              <text x="450" y="164" fill="var(--ink-2)">65 % routing</text>
+              <text x="670" y="164" fill="var(--ink-3)">Fixes designed: register the lane extension into WB &middot; precompute the forwarding match bits in ID</text>
+            </g>
+          </svg>
+        </figure>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>74 MHz is measured, not estimated, and the path that limits it is identified. That makes the two planned fixes a <em>scheduled task rather than a hope</em>.</p></div>
+  </section>
+
+
+  <!-- ============ MEMBER: TESTING &MDASH; PROVING IT, AND MEASURING IT ============ -->
+  <section class="slide" data-sect="03 &middot; Verification" data-seg="3" data-steps="1">
+    <div class="body">
+      <p class="eyebrow">Speaker 3 of 3 &middot; <span style='color:var(--ink-3)'>[ name ]</span></p>
+      <h2>Testing &mdash; proving it, and measuring it</h2>
+      <p class="dek" style="margin-bottom:22px">Nothing in this project is judged by looking at a waveform. Every test states its own verdict, and every golden value comes from the reference model rather than from a person.</p>
+      <div style="flex:1; display:grid; grid-template-columns:1.15fr 1fr; gap:32px; align-content:start; min-height:0">
+        <div class="panel">
+          <h3>Owned end to end</h3>
+          <table class="spec"><tr><td class="k">Plan</td><td>The three-tier strategy and the pass criteria for each tier</td></tr><tr><td class="k">Unit</td><td>A testbench for every module that is not pure wiring</td></tr><tr><td class="k">Programs</td><td>One assembly program per encoding, plus nine directed hazard programs</td></tr><tr><td class="k">Diffing</td><td>The RTL-versus-reference commit-trace harness and the regression driver</td></tr><tr><td class="k">Measurement</td><td>CPI with forwarding on and off, predictor accuracy, synthesis reporting</td></tr><tr><td class="k">Demo</td><td>The demo script and the evidence captures for the final presentation</td></tr></table>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="tiles" style="grid-template-columns:1fr 1fr 1fr"><div class="tile"><span class="n" style="color:var(--series-a)">26,425</span><span class="l">unit vectors</span><span class="s">11 testbenches</span></div><div class="tile"><span class="n" style="color:var(--ink)">68</span><span class="l">programs</span><span class="s">run at 4 configs</span></div><div class="tile"><span class="n" style="color:var(--series-b)">0</span><span class="l">trace diffs</span><span class="s">against the ISS</span></div></div>
+          <div class="panel" style="flex:1">
+            <h3>Delivered</h3>
+            <ul style="margin:0; padding-left:22px; font-size:20px; line-height:1.4; color:var(--ink-2)"><li style="margin-bottom:10px">11 unit testbenches totalling 26,425 vectors</li><li style="margin-bottom:10px">68 assembly programs across four suites</li><li style="margin-bottom:10px">The trace-diff harness and <span class='mono'>tools/run_tests.py</span></li><li style="margin-bottom:10px">The CPI and branch-prediction measurements in this deck</li><li style="margin-bottom:10px">Mutation checks: every testbench shown to FAIL against a broken module</li></ul>
+          </div>
+          <div class="panel" style="border-color:var(--series-a)">
+            <h3 style="color:var(--series-a)">Where to look</h3>
+            <p style="margin:0; font-size:20px; line-height:1.45; color:var(--ink-2)">Green at <strong>all four</strong> <span class='mono'>FORWARDING</span> &times; <span class='mono'>BHT_ENABLE</span> configurations, byte-exact against the reference model.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>A test that has never been shown to fail is <em>not yet evidence</em>. That is why the mutation checks exist.</p></div>
+  </section>
+  <!-- ============ 10 VERIFICATION TIERS (3 builds) ============ -->
+  <section class="slide" data-sect="03 &middot; Verification" data-seg="3" data-hi="WB" data-steps="3">
+    <div class="body">
+      <p class="eyebrow">Strategy</p>
+      <h2>Three tiers, and nothing checked by eye</h2>
+      <figure class="fig">
+        <svg viewBox="0 0 1700 430" role="img" aria-label="Three verification tiers stacked: the batch simulator flow at the base, unit and per-instruction self-checking tests in the middle, and differential testing against the Python reference model at the top.">
+          <g font-family="IBM Plex Sans, sans-serif">
+            <g>
+              <rect x="0" y="280" width="1700" height="122" rx="3" fill="var(--surface)" stroke="var(--rule-2)"/>
+              <rect x="0" y="280" width="6" height="122" fill="var(--st2)"/>
+              <text x="32" y="318" font-family="IBM Plex Mono, monospace" font-size="16" font-weight="600" letter-spacing="1.6" fill="var(--ink-3)">TIER 1 &mdash; THE BATCH FLOW</text>
+              <text x="32" y="352" font-size="23" fill="var(--ink)">Every simulation runs through the same three commands in batch mode: no GUI, no waveform viewer, no human judgement in the loop.</text>
+              <text x="32" y="384" font-size="20" fill="var(--ink-2)">A run exits zero only if the log contains a PASS line and no FAIL line, so a regression cannot pass by being ignored.</text>
+              <text x="1668" y="352" font-family="IBM Plex Mono, monospace" font-size="23" font-weight="600" text-anchor="end" fill="var(--ink-2)">xvlog / xelab / xsim</text>
+            </g>
+            <g data-step="2">
+              <rect x="0" y="140" width="1700" height="122" rx="3" fill="var(--surface)" stroke="var(--rule-2)"/>
+              <rect x="0" y="140" width="6" height="122" fill="var(--st4)"/>
+              <text x="32" y="178" font-family="IBM Plex Mono, monospace" font-size="16" font-weight="600" letter-spacing="1.6" fill="var(--ink-3)">TIER 2 &mdash; SELF-CHECKING TESTS</text>
+              <text x="32" y="212" font-size="23" fill="var(--ink)">A standalone testbench for every module that is not pure wiring, plus one assembly program per encoding with golden register and memory state.</text>
+              <text x="32" y="244" font-size="20" fill="var(--ink-2)">Every vector is generated by the already cross-validated tools, never by a second hand-written copy of the logic being tested.</text>
+              <text x="1668" y="212" font-family="IBM Plex Mono, monospace" font-size="34" font-weight="600" text-anchor="end" fill="var(--ink-2)">11 + 46</text>
+            </g>
+            <g data-step="3">
+              <rect x="0" y="0" width="1700" height="122" rx="3" fill="var(--surface)" stroke="var(--series-a)" stroke-width="2"/>
+              <rect x="0" y="0" width="6" height="122" fill="var(--series-a)"/>
+              <text x="32" y="38" font-family="IBM Plex Mono, monospace" font-size="16" font-weight="600" letter-spacing="1.6" fill="var(--series-a)">TIER 3 &mdash; DIFFERENTIAL TESTING</text>
+              <text x="32" y="72" font-size="23" fill="var(--ink)">A second, independent implementation of the same instruction set, written in Python without reference to the Verilog.</text>
+              <text x="32" y="104" font-size="20" fill="var(--ink-2)">Both execute the same image and emit the same commit-trace format. The files are diffed line by line, so a mismatch names the exact retiring instruction.</text>
+              <text x="1668" y="72" font-family="IBM Plex Mono, monospace" font-size="34" font-weight="600" text-anchor="end" fill="var(--series-a)">iss.py</text>
+            </g>
+          </g>
+        </svg>
+        <figcaption>The commit trace is <span class="mono">&lt;pc&gt; &lt;insn&gt; x&lt;rd&gt;=&lt;value&gt; mem[&lt;addr&gt;]=&lt;value&gt;</span>, the same line from the RTL write-back stage and from the reference model.</figcaption>
+      </figure>
+    </div>
+    <div class="key"><span class="bar"></span><p>A trace diff localises a bug to <em>one retiring instruction</em>. For a five-stage pipeline that is the difference between an afternoon of debugging and a week of it.</p></div>
+  </section>
+
+  <!-- ============ 11 RESULTS (2 builds) ============ -->
+  <section class="slide" data-sect="03 &middot; Verification" data-seg="3" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">Results</p>
+      <h2>Green at every build configuration</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1fr 1fr; gap:34px; padding-top:12px; min-height:0">
+        <div style="display:flex; flex-direction:column; gap:22px">
+          <div class="tiles" style="grid-template-columns:1fr 1fr">
+            <div class="tile"><span class="n" style="color:var(--series-a)">26,425</span><span class="l">unit-level vectors</span><span class="s">across 11 testbenches</span></div>
+            <div class="tile"><span class="n" style="color:var(--series-b)">4,323</span><span class="l">toolchain checks</span><span class="s">assembler vs reference model</span></div>
+            <div class="tile"><span class="n">68</span><span class="l">assembly programs</span><span class="s">46 + 9 + 5 + 7 + 1</span></div>
+            <div class="tile"><span class="n">4</span><span class="l">build configurations</span><span class="s">forwarding x predictor</span></div>
+          </div>
+          <div class="panel" style="flex:1">
+            <h3>The five largest suites</h3>
+            <table class="data">
+              <thead><tr><th>Suite</th><th>Count</th><th style="text-align:left;padding-left:30px">What it proves</th></tr></thead>
+              <tbody>
+                <tr><td>tb_branch_unit</td><td class="num">16,072</td><td class="w">all six conditions, signed and unsigned extremes</td></tr>
+                <tr><td>tb_alu</td><td class="num">5,072</td><td class="w">11 operations, every shift amount</td></tr>
+                <tr><td>tb_bht</td><td class="num">2,600</td><td class="w">saturation, aliasing, same-cycle read and write</td></tr>
+                <tr><td>tb_imm_gen</td><td class="num">1,865</td><td class="w">all six immediate formats and their traps</td></tr>
+                <tr><td>tb_control</td><td class="num">667</td><td class="w">the full truth table, plus 120 illegal encodings</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="capture" data-step="2">
+          <span class="tag">Capture required</span>
+          <p class="what">The regression summary table, straight from the console</p>
+          <p class="how">Run on the Windows machine and screenshot the whole summary block: the per-program PASS lines plus the TOTAL row with cycles, instructions, stalls, flushes and CPI. It is the slide that shows the results were produced by a tool rather than typed into a table by hand.</p>
+          <code>python tools/run_tests.py --dir asm/prog</code>
+          <p class="how" style="font-size:18px">Crop tight to the table. A dark terminal is fine.</p>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>This suite is <em>the acceptance criterion from slide 2</em>, already running. Golden values come from the reference model, never from a person, so a test cannot agree with the RTL by accident.</p></div>
+  </section>
+
+  <!-- ============ 12 PERFORMANCE (3 builds) ============ -->
+  <section class="slide" data-sect="03 &middot; Verification" data-seg="3" data-steps="3">
+    <div class="body">
+      <p class="eyebrow">Performance</p>
+      <h2>The same three programs finish in 6,799 cycles instead of 9,003</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1fr 1fr; gap:36px; min-height:0; padding-top:6px">
+
+        <figure class="fig">
+          <svg viewBox="0 0 1020 470" role="img" aria-label="Grouped bar chart of cycles per instruction with forwarding enabled versus disabled, for the Fibonacci, bubble sort and branch loop benchmarks. Forwarding lowers CPI in all three.">
+            <g stroke="var(--rule)" stroke-width="1">
+              <line x1="96" y1="380" x2="1000" y2="380"/><line x1="96" y1="300" x2="1000" y2="300"/>
+              <line x1="96" y1="220" x2="1000" y2="220"/><line x1="96" y1="140" x2="1000" y2="140"/>
+              <line x1="96" y1="60" x2="1000" y2="60"/>
+            </g>
+            <g font-family="IBM Plex Mono, monospace" font-size="15" fill="var(--ink-3)" text-anchor="end">
+              <text x="80" y="386">0</text><text x="80" y="306">0.6</text><text x="80" y="226">1.2</text><text x="80" y="146">1.8</text><text x="80" y="66">2.4</text>
+            </g>
+            <text transform="rotate(-90 26 220)" x="26" y="220" font-family="IBM Plex Mono, monospace" font-size="15" fill="var(--ink-3)" text-anchor="middle">CYCLES PER INSTRUCTION</text>
+            <line x1="96" y1="246.7" x2="1000" y2="246.7" stroke="var(--ink-3)" stroke-width="1.5" stroke-dasharray="6 5"/>
+            <text x="1000" y="240" font-family="IBM Plex Mono, monospace" font-size="14" fill="var(--ink-3)" text-anchor="end">ideal CPI = 1.0</text>
+            <g>
+              <rect x="150" y="197.6" width="112" height="182.4" rx="4" fill="var(--series-a)"/>
+              <rect x="278" y="78.3" width="112" height="301.7" rx="4" fill="var(--series-b)"/>
+              <text x="206" y="186" font-family="IBM Plex Mono, monospace" font-size="19" font-weight="600" fill="var(--series-a)" text-anchor="middle">1.368</text>
+              <text x="334" y="67" font-family="IBM Plex Mono, monospace" font-size="19" font-weight="600" fill="var(--series-b)" text-anchor="middle">2.263</text>
+              <text x="270" y="410" font-family="IBM Plex Mono, monospace" font-size="19" fill="var(--ink)" text-anchor="middle">fib</text>
+              <text x="270" y="436" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="600" fill="var(--ok)" text-anchor="middle">1.65x faster</text>
+            </g>
+            <g>
+              <rect x="452" y="196.5" width="112" height="183.5" rx="4" fill="var(--series-a)"/>
+              <rect x="580" y="126.1" width="112" height="253.9" rx="4" fill="var(--series-b)"/>
+              <text x="508" y="185" font-family="IBM Plex Mono, monospace" font-size="19" font-weight="600" fill="var(--series-a)" text-anchor="middle">1.376</text>
+              <text x="636" y="115" font-family="IBM Plex Mono, monospace" font-size="19" font-weight="600" fill="var(--series-b)" text-anchor="middle">1.904</text>
+              <text x="572" y="410" font-family="IBM Plex Mono, monospace" font-size="19" fill="var(--ink)" text-anchor="middle">bsort</text>
+              <text x="572" y="436" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="600" fill="var(--ok)" text-anchor="middle">1.38x</text>
+            </g>
+            <g>
+              <rect x="754" y="193.9" width="112" height="186.1" rx="4" fill="var(--series-a)"/>
+              <rect x="882" y="152.4" width="112" height="227.6" rx="4" fill="var(--series-b)"/>
+              <text x="810" y="183" font-family="IBM Plex Mono, monospace" font-size="19" font-weight="600" fill="var(--series-a)" text-anchor="middle">1.396</text>
+              <text x="938" y="141" font-family="IBM Plex Mono, monospace" font-size="19" font-weight="600" fill="var(--series-b)" text-anchor="middle">1.707</text>
+              <text x="874" y="410" font-family="IBM Plex Mono, monospace" font-size="19" fill="var(--ink)" text-anchor="middle">bloop</text>
+              <text x="874" y="436" font-family="IBM Plex Mono, monospace" font-size="17" font-weight="600" fill="var(--ok)" text-anchor="middle">1.22x</text>
+            </g>
+            <line x1="96" y1="380" x2="1000" y2="380" stroke="var(--ink-3)" stroke-width="1.5"/>
+            <g font-family="IBM Plex Sans, sans-serif" font-size="17">
+              <rect x="150" y="452" width="15" height="15" rx="2" fill="var(--series-a)"/><text x="174" y="465" fill="var(--ink-2)">forwarding on</text>
+              <rect x="330" y="452" width="15" height="15" rx="2" fill="var(--series-b)"/><text x="354" y="465" fill="var(--ink-2)">forwarding off, stall instead</text>
+            </g>
+          </svg>
+          <figcaption>Same programs, same predictor setting. Only the compile-time <span class="mono">FORWARDING</span> parameter changes.</figcaption>
+        </figure>
+
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <figure class="fig" data-step="2" style="flex:none">
+            <svg viewBox="0 0 1020 330" role="img" aria-label="Diverging bar chart of the change in cycle count when the branch predictor is enabled. The branch-prediction demo saves 14.5 percent and Fibonacci saves 8.8 percent, while bubble sort costs 0.5 percent and the adversarial branch loop costs 10 percent.">
+              <line x1="470" y1="34" x2="470" y2="270" stroke="var(--ink-3)" stroke-width="2"/>
+              <text x="470" y="24" font-family="IBM Plex Mono, monospace" font-size="14" fill="var(--ink-3)" text-anchor="middle">0 %</text>
+              <g stroke="var(--rule)" stroke-dasharray="4 4">
+                <line x1="350" y1="34" x2="350" y2="270"/><line x1="230" y1="34" x2="230" y2="270"/>
+                <line x1="590" y1="34" x2="590" y2="270"/><line x1="710" y1="34" x2="710" y2="270"/>
+              </g>
+              <g font-family="IBM Plex Mono, monospace" font-size="13" fill="var(--ink-3)" text-anchor="middle">
+                <text x="350" y="24">&minus;5</text><text x="230" y="24">&minus;10</text><text x="590" y="24">+5</text><text x="710" y="24">+10</text>
+              </g>
+              <g>
+                <rect x="122" y="42" width="348" height="40" rx="4" fill="var(--series-a)"/>
+                <text x="112" y="68" font-family="IBM Plex Mono, monospace" font-size="18" font-weight="600" fill="var(--series-a)" text-anchor="end">&minus;14.5 %</text>
+                <text x="482" y="62" font-family="IBM Plex Mono, monospace" font-size="17" fill="var(--ink)">bpred</text>
+                <text x="482" y="79" font-family="IBM Plex Mono, monospace" font-size="14" fill="var(--ink-3)">95.5 % accurate</text>
+              </g>
+              <g>
+                <rect x="259" y="98" width="211" height="40" rx="4" fill="var(--series-a)"/>
+                <text x="249" y="124" font-family="IBM Plex Mono, monospace" font-size="18" font-weight="600" fill="var(--series-a)" text-anchor="end">&minus;8.8 %</text>
+                <text x="482" y="118" font-family="IBM Plex Mono, monospace" font-size="17" fill="var(--ink)">fib</text>
+                <text x="482" y="135" font-family="IBM Plex Mono, monospace" font-size="14" fill="var(--ink-3)">93.4 % accurate</text>
+              </g>
+              <g>
+                <rect x="470" y="154" width="12" height="40" rx="4" fill="var(--series-b)"/>
+                <text x="494" y="180" font-family="IBM Plex Mono, monospace" font-size="18" font-weight="600" fill="var(--series-b)">+0.5 %</text>
+                <text x="600" y="174" font-family="IBM Plex Mono, monospace" font-size="17" fill="var(--ink)">bsort</text>
+                <text x="600" y="191" font-family="IBM Plex Mono, monospace" font-size="14" fill="var(--ink-3)">75.3 % accurate</text>
+              </g>
+              <g>
+                <rect x="470" y="210" width="240" height="40" rx="4" fill="var(--series-b)"/>
+                <text x="722" y="236" font-family="IBM Plex Mono, monospace" font-size="18" font-weight="600" fill="var(--series-b)">+10.0 %</text>
+                <text x="482" y="230" font-family="IBM Plex Mono, monospace" font-size="17" fill="#fff">bloop</text>
+                <text x="482" y="247" font-family="IBM Plex Mono, monospace" font-size="14" fill="#fff" opacity=".85">49.9 % &mdash; adversarial</text>
+              </g>
+              <g font-family="IBM Plex Sans, sans-serif" font-size="16">
+                <rect x="122" y="292" width="14" height="14" rx="2" fill="var(--series-a)"/><text x="144" y="304" fill="var(--ink-2)">cycles saved</text>
+                <rect x="290" y="292" width="14" height="14" rx="2" fill="var(--series-b)"/><text x="312" y="304" fill="var(--ink-2)">cycles cost</text>
+                <text x="450" y="304" fill="var(--ink-3)" font-size="15">change in cycle count with the predictor on</text>
+              </g>
+            </svg>
+            <figcaption>Forwarding is on in every run. Only <span class="mono">BHT_ENABLE</span> changes.</figcaption>
+          </figure>
+
+          <div class="panel" data-step="3">
+            <h3>Reading both charts</h3>
+            <p style="font-size:20px;line-height:1.45;color:var(--ink-2);margin:0 0 12px"><strong style="color:var(--ink)">Forwarding helps most where dependencies are tight.</strong> fib gains 1.65x because each loop iteration consumes the previous result almost immediately. bloop gains least, and its load-use stall count is <span class="mono">zero</span> even with forwarding on, so there was nothing for the bypass to save.</p>
+            <p style="font-size:20px;line-height:1.45;color:var(--ink-2);margin:0"><strong style="color:var(--ink)">The predictor can only win on taken branches.</strong> A correct not-taken prediction already cost nothing. bloop was written to defeat a 2-bit counter, alternating taken and not-taken every iteration, and the 400-cycle loss matches the arithmetic exactly.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Slide 2 promised performance measured <em>against a baseline</em> rather than quoted in isolation. This is that measurement, for both bonus features.</p></div>
+  </section>
+
+  <!-- ============ 13 WAVEFORM ============ -->
+  <section class="slide" data-sect="03 &middot; Verification" data-seg="3" data-hi="ID,EX" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">Simulation evidence</p>
+      <h2>The hazard logic, seen in the waveform</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1.6fr 1fr; gap:34px; min-height:0; padding-top:10px">
+        <div class="capture">
+          <span class="tag">Capture required</span>
+          <p class="what">An xsim waveform showing a load-use stall and a branch flush</p>
+          <p class="how">Record the waveform database on the Windows machine, open it in the Vivado GUI, and screenshot roughly 15 cycles around the stall.</p>
+          <code>bash sim/run.sh tb_program --plusarg +PROG=asm/hazard/load_use --wave</code>
+          <p class="how" style="margin-top:4px">Put these signals in the viewer, in this order:</p>
+          <div class="chips" style="justify-content:center; max-width:820px">
+            <span class="chip">clk</span><span class="chip">pc_q</span><span class="chip">if_id_pc</span>
+            <span class="chip" style="border-color:var(--stall);color:var(--stall)">stall</span>
+            <span class="chip" style="border-color:var(--flush);color:var(--flush)">flush_if</span>
+            <span class="chip" style="border-color:var(--flush);color:var(--flush)">flush_id</span>
+            <span class="chip" style="border-color:var(--fwd);color:var(--fwd)">fwd_a</span>
+            <span class="chip" style="border-color:var(--fwd);color:var(--fwd)">fwd_b</span>
+            <span class="chip">trace_valid</span><span class="chip">trace_pc</span>
+          </div>
+          <p class="how" style="font-size:18px">Frame it so <span class="mono">stall</span> is visibly high for exactly one cycle while <span class="mono">pc_q</span> holds its value.</p>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:22px" data-step="2">
+          <div class="panel">
+            <h3>What the audience should see</h3>
+            <table class="spec">
+              <tr><td class="k">stall high</td><td>for exactly one cycle, while <span class="mono">pc_q</span> and <span class="mono">if_id_pc</span> hold</td></tr>
+              <tr><td class="k">fwd_a / fwd_b</td><td>switching to <span class="mono">01</span> the cycle after the stall, the MEM/WB bypass delivering the loaded value</td></tr>
+              <tr><td class="k">flush_if / flush_id</td><td>pulsing together on the taken branch, two slots killed</td></tr>
+              <tr><td class="k">trace_valid</td><td>never asserting for a killed instruction</td></tr>
+            </table>
+          </div>
+          <div class="panel" style="border-color:var(--series-a)">
+            <h3 style="color:var(--series-a)">Why this slide exists</h3>
+            <p style="font-size:21px;line-height:1.5;color:var(--ink-2);margin:0">The course task asks us to <em style="font-style:normal;color:var(--ink);font-weight:600">use the simulation tools to show the function of the CPU</em>. The PASS lines prove it to a machine. This is the picture that proves it to a person.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Correctness is decided by the self-checking testbenches, never by reading a waveform. The waveform is <em>evidence for the audience</em>, not the test.</p></div>
+  </section>
+
+  <!-- ============ 14 CLOSE ============ -->
+  <section class="slide" data-sect="Summary" data-seg="0" data-steps="1">
+    <div class="body">
+      <p class="eyebrow">Where we are</p>
+      <h2>What we are committing to, and why we can</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1fr 1fr 1fr; gap:30px; padding-top:20px; align-content:start">
+        <div class="panel">
+          <h3 style="color:var(--series-a)">Function</h3>
+          <p style="font-size:23px;line-height:1.45;margin:0 0 18px;color:var(--ink)">46 encodings execute correctly on a 5-stage pipeline with full forwarding, a load-use interlock and flush-based control recovery.</p>
+          <p style="font-size:20px;line-height:1.45;margin:0;color:var(--ink-2)">Checked against an independent reference model, byte for byte, at every build configuration.</p>
+        </div>
+        <div class="panel">
+          <h3 style="color:var(--series-a)">Performance</h3>
+          <p style="font-size:23px;line-height:1.45;margin:0 0 18px;color:var(--ink)">Forwarding is worth <strong>1.32x</strong> overall and <strong>1.65x</strong> on the tightest dependent loop. The predictor reaches <strong>95.5 %</strong> where branches are taken.</p>
+          <p style="font-size:20px;line-height:1.45;margin:0;color:var(--ink-2)">Both measured by counters in the RTL, both with the feature switched off as the baseline.</p>
+        </div>
+        <div class="panel">
+          <h3 style="color:var(--series-b)">Between here and Sep 17</h3>
+          <p style="font-size:23px;line-height:1.45;margin:0 0 18px;color:var(--ink)">Two timing improvements, the final regression on the frozen RTL, the final synthesis run, and the demo package.</p>
+          <p style="font-size:20px;line-height:1.45;margin:0;color:var(--ink-2)">None of it is new design work. It is finishing measurement on a machine that already runs.</p>
+        </div>
+      </div>
+      <div class="stagestrip" style="margin-top:8px">
+        <div style="background:var(--st1);color:var(--st1-ink)">IF</div>
+        <div style="background:var(--st2);color:var(--st2-ink)">ID</div>
+        <div style="background:var(--st3);color:var(--st3-ink)">EX</div>
+        <div style="background:var(--st4);color:var(--st4-ink)">MEM</div>
+        <div style="background:var(--st5);color:var(--st5-ink)">WB</div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Every criterion on slide 2 is already met once. What remains is <em>measurement on a machine that runs</em>, not design.</p></div>
+  </section>
+
+  <!-- ============ A1 APPENDIX: DECISIONS ============ -->
+  <section class="slide" data-sect="Appendix &mdash; if asked" data-seg="0" data-steps="1">
+    <div class="body">
+      <p class="eyebrow">Appendix</p>
+      <h2>Design decisions, and what each one cost</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1fr 1fr; gap:30px; align-content:start; padding-top:12px">
+        <div class="panel">
+          <h3>Architecture</h3>
+          <table class="spec">
+            <tr><td class="k">ISA</td><td>RV32I user subset plus simplified machine-mode CSRs</td></tr>
+            <tr><td class="k">Pipeline</td><td>5 stages, in-order issue, in-order completion</td></tr>
+            <tr><td class="k">Memory</td><td>Harvard, 4 KB + 4 KB, single-cycle synchronous, <span class="mono">$readmemh</span> initialised</td></tr>
+            <tr><td class="k">Reset</td><td>Synchronous, active high, PC to <span class="mono">0x00000000</span></td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <h3>Hazards and control flow</h3>
+          <table class="spec">
+            <tr><td class="k">Data</td><td>Full EX/MEM and MEM/WB forwarding; EX/MEM has priority; x0 never forwarded</td></tr>
+            <tr><td class="k">Load-use</td><td>1-cycle interlock, then served by the MEM/WB bypass</td></tr>
+            <tr><td class="k">jal / branch</td><td>ID, 1 bubble / EX, 2 bubbles</td></tr>
+            <tr><td class="k">Baseline</td><td><span class="mono">FORWARDING</span> disables the bypass network for the CPI comparison</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <h3>Bonus scope</h3>
+          <table class="spec">
+            <tr><td class="k">Branch pred.</td><td><strong>Implemented</strong>, 64-entry 2-bit BHT with accuracy counters</td></tr>
+            <tr><td class="k">Interrupts</td><td><strong>Implemented</strong>, mstatus / mie / mtvec / mepc / mcause, CSR instructions, mret, external irq</td></tr>
+            <tr><td class="k">I-cache</td><td><strong>Cut on purpose.</strong> Behind a single-cycle memory a hit and a miss cost the same, and the whole suite fits in 2 KB, so the hit rate would read ~99 % and prove nothing</td></tr>
+          </table>
+        </div>
+        <div class="panel">
+          <h3>Toolchain and target</h3>
+          <table class="spec">
+            <tr><td class="k">HDL</td><td>Plain synthesizable Verilog-2001, no IP catalog, no block design</td></tr>
+            <tr><td class="k">Simulator</td><td>Vivado 2026.1 xsim, batch flow</td></tr>
+            <tr><td class="k">Reference</td><td>Written in Python. Mars4_5 is MIPS-only and cannot execute RISC-V</td></tr>
+            <tr><td class="k">Part</td><td><span class="mono">xc7a35tcpg236-1</span>, simulation plus synthesis report, no board</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Cutting the cache was a <em>measurement decision</em>, not a schedule one.</p></div>
+  </section>
+
+  <!-- ============ A2 APPENDIX: MODULES ============ -->
+  <section class="slide" data-sect="Appendix &mdash; if asked" data-seg="0" data-steps="1">
+    <div class="body">
+      <p class="eyebrow">Appendix</p>
+      <h2>19 RTL modules, and the two tools we wrote first</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1.15fr 1fr; gap:36px; padding-top:14px; align-content:start">
+        <div class="panel">
+          <h3>rtl/ &mdash; 19 modules, plain Verilog-2001</h3>
+          <div style="display:flex; flex-direction:column; gap:18px">
+            <div><p class="mono" style="font-size:16px;letter-spacing:.1em;color:var(--ink-3);margin:0 0 9px">PIPELINE REGISTERS &mdash; 4</p>
+              <div class="chips"><span class="chip">if_id.v</span><span class="chip">id_ex.v</span><span class="chip">ex_mem.v</span><span class="chip">mem_wb.v</span></div></div>
+            <div><p class="mono" style="font-size:16px;letter-spacing:.1em;color:var(--ink-3);margin:0 0 9px">DATAPATH &mdash; 7</p>
+              <div class="chips"><span class="chip">pc.v</span><span class="chip">regfile.v</span><span class="chip">alu.v</span><span class="chip">alu_ctrl.v</span><span class="chip">imm_gen.v</span><span class="chip">control.v</span><span class="chip">branch_unit.v</span></div></div>
+            <div><p class="mono" style="font-size:16px;letter-spacing:.1em;color:var(--ink-3);margin:0 0 9px">HAZARD LOGIC &mdash; 2</p>
+              <div class="chips"><span class="chip" style="border-color:var(--fwd);color:var(--fwd)">forward_unit.v</span><span class="chip" style="border-color:var(--stall);color:var(--stall)">hazard_unit.v</span></div></div>
+            <div><p class="mono" style="font-size:16px;letter-spacing:.1em;color:var(--ink-3);margin:0 0 9px">BONUS AND INSTRUMENTATION &mdash; 3</p>
+              <div class="chips"><span class="chip">bht.v</span><span class="chip">csr.v</span><span class="chip">perf_counters.v</span></div></div>
+            <div><p class="mono" style="font-size:16px;letter-spacing:.1em;color:var(--ink-3);margin:0 0 9px">MEMORY AND TOP &mdash; 3</p>
+              <div class="chips"><span class="chip">imem.v</span><span class="chip">dmem.v</span><span class="chip">cpu_top.v</span></div></div>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:24px">
+          <div class="panel">
+            <h3>tools/ &mdash; the toolchain problem</h3>
+            <p style="font-size:21px;line-height:1.5;color:var(--ink-2);margin:0 0 18px">The course names Mars4_5 as the simulator. Mars executes MIPS, not RISC-V, so there was no reference model to check the RTL against. We wrote one.</p>
+            <figure class="fig" style="flex:none">
+              <svg viewBox="0 0 640 250" role="img" aria-label="Flow diagram: an assembly program is assembled by asm.py into a hex image, which both the CPU RTL and the Python reference model execute, each emitting a commit trace that is diffed byte for byte.">
+                <defs><marker id="ahT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/></marker></defs>
+                <g font-family="IBM Plex Mono, monospace" font-size="15">
+                  <rect x="0" y="8" width="180" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/><text x="90" y="36" text-anchor="middle" fill="var(--ink)">program.s</text>
+                  <path d="M90 58 L90 84" stroke="var(--ink-3)" stroke-width="1.5" marker-end="url(#ahT)"/>
+                  <rect x="0" y="88" width="180" height="46" rx="2" fill="var(--surface)" stroke="var(--series-a)"/><text x="90" y="116" text-anchor="middle" fill="var(--series-a)">asm.py</text>
+                  <path d="M90 138 L90 164" stroke="var(--ink-3)" stroke-width="1.5" marker-end="url(#ahT)"/>
+                  <rect x="0" y="168" width="180" height="46" rx="2" fill="var(--surface-3)" stroke="var(--rule)"/><text x="90" y="196" text-anchor="middle" fill="var(--ink)">program.hex</text>
+                  <path d="M180 191 L232 191" stroke="var(--ink-3)" stroke-width="1.5" marker-end="url(#ahT)"/>
+                  <path d="M180 191 L206 191 L206 111 L232 111" stroke="var(--ink-3)" stroke-width="1.5" fill="none" marker-end="url(#ahT)"/>
+                  <rect x="236" y="88" width="180" height="46" rx="2" fill="var(--surface)" stroke="var(--series-b)"/><text x="326" y="116" text-anchor="middle" fill="var(--series-b)">iss.py</text>
+                  <rect x="236" y="168" width="180" height="46" rx="2" fill="var(--surface)" stroke="var(--st4)"/><text x="326" y="196" text-anchor="middle" fill="var(--ink)">cpu_top &middot; xsim</text>
+                  <path d="M416 111 L468 111 L468 137" stroke="var(--ink-3)" stroke-width="1.5" fill="none" marker-end="url(#ahT)"/>
+                  <path d="M416 191 L468 191 L468 165" stroke="var(--ink-3)" stroke-width="1.5" fill="none" marker-end="url(#ahT)"/>
+                  <rect x="440" y="128" width="200" height="46" rx="2" fill="var(--tint-a)" stroke="var(--series-a)"/>
+                  <text x="540" y="150" text-anchor="middle" fill="var(--ink)" font-weight="600">byte-exact diff</text>
+                  <text x="540" y="167" text-anchor="middle" fill="var(--ink-3)" font-size="13">commit traces</text>
+                </g>
+              </svg>
+            </figure>
+          </div>
+          <div class="tiles" style="grid-template-columns:1fr 1fr">
+            <div class="tile"><span class="n" style="color:var(--series-a)">861</span><span class="l">lines of assembler</span><span class="s">two-pass, 6 formats</span></div>
+            <div class="tile"><span class="n" style="color:var(--series-b)">589</span><span class="l">lines of reference model</span><span class="s">emits the commit trace</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Building our own reference model forced every ISA question to be <em>answered once, explicitly</em>, before the RTL was written.</p></div>
+  </section>
+
+  <!-- ============ A3 APPENDIX: MUTATION TESTING ============ -->
+  <section class="slide" data-sect="Appendix &mdash; if asked" data-seg="0" data-steps="1">
+    <div class="body">
+      <p class="eyebrow">Appendix</p>
+      <h2>How we know the tests would actually fail</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1.4fr 1fr; gap:34px; padding-top:12px; align-content:start">
+        <div class="panel">
+          <h3>Mutation checks &mdash; a broken DUT must produce FAIL</h3>
+          <table class="data">
+            <thead><tr><th>Bug injected on purpose</th><th style="text-align:left;padding-left:30px">Caught by</th></tr></thead>
+            <tbody>
+              <tr><td>SRA as a logical shift</td><td class="w">tb_alu, negative-operand vectors</td></tr>
+              <tr><td>WB to ID bypass removed</td><td class="w">tb_regfile</td></tr>
+              <tr><td>B-format immediate bit flipped</td><td class="w">tb_imm_gen</td></tr>
+              <tr><td>alu_ctrl reads inst[30] for addi</td><td class="w">tb_control, the addi / sub trap</td></tr>
+              <tr><td>Forwarding priority swapped</td><td class="w">asm/hazard/fwd_ex_ex.s</td></tr>
+              <tr><td>x0 guard removed from forwarding</td><td class="w">asm/hazard/x0_hazard.s</td></tr>
+              <tr><td>Load-use interlock disabled</td><td class="w">asm/hazard/load_use.s</td></tr>
+              <tr><td>lb sign extension removed</td><td class="w">tb_dmem and asm/insn/lb.s</td></tr>
+              <tr><td style="color:var(--series-b)">BHT trained with the inverted outcome</td><td class="w" style="color:var(--series-b)">nothing, and that is correct</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel" style="border-color:var(--series-b)">
+          <h3 style="color:var(--series-b)">The last row is the interesting one</h3>
+          <p style="font-size:21px;line-height:1.5;color:var(--ink-2);margin:0 0 16px">Training the predictor with the <strong>inverted</strong> outcome collapses accuracy. fib falls from 93.4 % to 3.3 %, and bloop costs another 438 cycles.</p>
+          <p style="font-size:21px;line-height:1.5;color:var(--ink-2);margin:0 0 16px">Yet every program still passes its byte-exact trace diff.</p>
+          <p style="font-size:21px;line-height:1.5;color:var(--ink);margin:0"><strong>That is the right answer.</strong> The predictor only changes <em style="font-style:normal;color:var(--series-a)">when</em> instructions are fetched, never what they compute. Correctness rests entirely on the EX-stage resolution and flush, and the trace diff should be blind to a misprediction rate.</p>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>A testbench is not trusted until it has been <em>shown to fail</em> against a deliberately broken copy of the module it checks.</p></div>
+  </section>
+
+  </div>
+</div>
+</div>
+
+<div class="ctl">
+  <button id="prev" aria-label="Previous">&larr;</button>
+  <span class="pos" id="pos">1 / 20</span>
+  <button id="next" aria-label="Next">&rarr;</button>
+</div>
+
+<script>
+(function(){
+  var stage   = document.getElementById('stage');
+  var slides  = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var sectEl  = document.getElementById('sect');
+  var metaEl  = document.getElementById('meta');
+  var posEl   = document.getElementById('pos');
+  var mmEls   = Array.prototype.slice.call(document.querySelectorAll('#minimap i'));
+  var segEls  = Array.prototype.slice.call(document.querySelectorAll('#segs .seg'));
+  var MAIN    = 20; // slides after this index are appendix
+  var i = 0, st = 1;
+
+  function fit(){
+    var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    stage.style.transform = 'scale(' + s + ')';
+  }
+
+  function stepsOf(el){ return parseInt(el.getAttribute('data-steps') || '1', 10); }
+
+  function render(){
+    slides.forEach(function(el, k){ el.classList.toggle('on', k === i); });
+    var cur = slides[i];
+
+    Array.prototype.forEach.call(cur.querySelectorAll('[data-step]'), function(e){
+      e.classList.toggle('shown', parseInt(e.getAttribute('data-step'), 10) <= st);
+    });
+
+    sectEl.innerHTML = cur.getAttribute('data-sect') || '';
+
+    var hi = (cur.getAttribute('data-hi') || '').split(',').map(function(s){ return s.trim(); });
+    mmEls.forEach(function(el){ el.classList.toggle('lit', hi.indexOf(el.getAttribute('data-s')) !== -1); });
+
+    var seg = parseInt(cur.getAttribute('data-seg') || '0', 10);
+    segEls.forEach(function(el, k){ el.classList.toggle('act', k === seg - 1); });
+
+    var n = stepsOf(cur);
+    var label = (i < MAIN) ? ((i + 1) + ' / ' + MAIN) : ('A' + (i - MAIN + 1));
+    metaEl.textContent = label + (n > 1 ? '   ·   ' + st + ' of ' + n : '');
+    posEl.textContent = label;
+    try { location.hash = String(i + 1); } catch(e){}
+  }
+
+  function next(){
+    if (st < stepsOf(slides[i])) { st++; }
+    else if (i < slides.length - 1) { i++; st = 1; }
+    render();
+  }
+  function prev(){
+    if (st > 1) { st--; }
+    else if (i > 0) { i--; st = stepsOf(slides[i]); }
+    render();
+  }
+
+  document.getElementById('next').addEventListener('click', next);
+  document.getElementById('prev').addEventListener('click', prev);
+
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); next(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); prev(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); if (i < slides.length-1){ i++; st = 1; render(); } }
+    else if (e.key === 'ArrowUp')   { e.preventDefault(); if (i > 0){ i--; st = 1; render(); } }
+    else if (e.key === 'Home') { e.preventDefault(); i = 0; st = 1; render(); }
+    else if (e.key === 'End')  { e.preventDefault(); i = slides.length - 1; st = stepsOf(slides[i]); render(); }
+  });
+
+  window.addEventListener('resize', fit);
+  fit();
+
+  var start = parseInt((location.hash || '').replace('#',''), 10);
+  if (!isNaN(start) && start >= 1 && start <= slides.length) { i = start - 1; }
+  render();
+})();
+</script>

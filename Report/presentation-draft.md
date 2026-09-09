@@ -25,18 +25,25 @@ Framing for every speaker: the story is "the machine is built and running; what'
 - Bonus scope: BHT branch prediction and interrupts implemented; I-cache designed only, cut on purpose (test programs fit in 2 KB, ~99% hit rate would prove nothing).
 
 ### Slide 4: Status — what's done vs what's next
-DONE (as of Sep 8):
+DONE:
 - Design document complete; RTL complete; both implemented bonuses working in simulation
 - Machine runs the full 46-encoding instruction set
-- Synthesis mapping fixed; setup timing met at 74 MHz (13.5 ns), register-to-register hold met
+- Every suite green at all four FORWARDING × BHT_ENABLE configurations
+- Placed and routed; setup timing met at 74 MHz
 
 NEXT (to Sep 17):
-- Timing fixes, final regression, final synthesis, demo packaging
-- Performance chapter, demo script, slides
+- Two RTL timing improvements, designed but not yet applied
+- Final regression on the frozen RTL + final synthesis numbers
+- Waveform captures, performance chapter, demo script, slides
+
+Framing note: the numbers we present are preliminary. One of the timing changes moves when a load
+result becomes available, so it can shift CPI — which is why the regression re-runs after the freeze.
 
 ### Slide 5: Plan and risk
-- Milestones Sep 8–17: timing fixes, full regression + final synthesis, performance chapter, feature freeze Sep 15, demo Sep 17.
-- Risk rule: interrupts were green on Sep 7, so the interrupt cut rule was never exercised. The live risk rule is now the timing work: if the RTL timing fixes do not close cleanly by end of Sep 14, we freeze on the current 74 MHz build, whose results are already verified, rather than ship an untested faster one.
+- Milestones Sep 11–17: apply the timing work, full regression after each change, final synthesis, performance chapter, feature freeze Sep 15, demo Sep 17.
+- The interrupt cut rule we planned was never exercised — interrupts came in green on Sep 7.
+- Live risk rule: if the timing work doesn't close cleanly by end of Sep 14, we freeze on the current 74 MHz build, whose results are already verified, rather than ship an untested faster one.
+- Team: one designer, one coder, one tester, one owner per deliverable, cross-review by reading.
 
 ---
 
@@ -50,15 +57,17 @@ NEXT (to Sep 17):
 - Forwarding: EX/MEM priority over MEM/WB, x0 never forwarded, store rs2 forwarded through EX.
 - Load-use: 1-cycle stall, bubble injection, result delivered by MEM/WB forwarding.
 - Control: jal in ID (1 bubble); branches and jalr in EX (2 bubbles); traps and mret reuse the same flush. Wrong-path instructions never write and never count as retired.
-- CSR: read-modify-write in EX in one cycle, so the next instruction already sees the new value; no interlock, and rs1 forwards like any operand.
+- CSR: read-modify-write in EX in a single cycle — rd gets the old value, the new value commits on the same edge. The next instruction reaches EX a cycle later and already sees it, so there is no CSR interlock; rs1 forwards like any other operand.
+- Traps: `ecall` leaves mepc pointing at the `ecall`, so the handler must add 4 before `mret`. An external interrupt leaves mepc at an instruction that never executed, so the handler must NOT add 4 — `mret` re-runs it.
 
 ### Slide 3: Bonus features — implemented, running
-- BHT: 64-entry, 2-bit saturating counters, indexed PC[7:2], looked up in IF. Strictly a performance feature: with BHT_ENABLE off it's bit-for-bit the base pipeline, correctness never depends on it.
+- BHT: 64-entry, 2-bit saturating counters, indexed PC[7:2]. Looked up in IF; the counter state rides in IF/ID and ID acts on it, redirecting to PC+immB on the same 1-bubble path `jal` uses. Resolved and updated in EX. A correctly predicted taken branch still costs 1 bubble; a correctly predicted not-taken branch costs 0. Strictly a performance feature: with BHT_ENABLE off it's bit-for-bit the base pipeline, correctness never depends on it.
 - Interrupts: mstatus/mie/mtvec/mepc/mcause, CSR instructions, mret, external irq input. Interrupt while MIE=0 is held pending, not dropped. Directed interrupt test passes.
 - A compile-time FORWARDING parameter turns the whole bypass network off for the baseline comparison.
 
 ### Slide 4: Synthesis status — done once, one final run next
-- DONE: post-fix synthesis closes setup timing at 74 MHz (13.5 ns, WNS +0.052, zero failing endpoints); 1,461 LUTs, 819 FFs, 2 BRAMs. 80 MHz attempt does not close. Register-to-register hold met at every constraint point; the only hold flags are paths from the rst input port, an artefact of out-of-context synthesis with no clock buffer modelled.
+- DONE: synthesis closes **setup** timing at 74 MHz (13.5 ns, WNS +0.052, zero failing setup endpoints); 1,461 LUTs, 819 FFs, 2 BRAMs. 80 MHz attempt does not close (−0.755 ns). Register-to-register hold met at every constraint point — the only hold flags start at the `rst` port, an out-of-context artefact where no clock buffer is modelled.
+- Critical path: DMEM block RAM clock-to-out (2.454 ns), lane select and sign extension of the load result in WB, MEM/WB→EX forwarding mux into a dependent branch, branch comparator, redirect into the PC clock enable. 12.982 ns, 15 logic levels.
 - We also caught and fixed a synthesis mapping bug: the first run's 88 MHz was measured on a netlist with no real instruction memory. After pinning memories to block RAM, the honest number is 74 MHz.
 - NEXT: one final synthesis run after feature freeze (Sep 11–12); fix-on-fail loop continues with testing.
 
@@ -74,7 +83,8 @@ NEXT (to Sep 17):
 ### Slide 2: Results so far — everything run so far is green
 - Unit testbenches: all 11 green (imm_gen 1,865 vectors, ALU 5,072, branch_unit 16,072, BHT 2,600, and so on).
 - Assembler-vs-ISS cross-validation: 4,323 checks PASS.
-- Per-instruction 46/46, hazard 9/9, program-level 5/5, all trace-exact against the ISS at every forwarding × BHT configuration on the current RTL.
+- Per-instruction 46/46, hazard 9/9, program-level 5/5, bring-up 7/7 — all trace-exact against the ISS at every FORWARDING × BHT_ENABLE combination on the current RTL.
+- Program-level diff tests (fib, bsort, branch loop, bpred, interrupt demo): zero differing trace lines, identical final register files.
 
 ### Slide 3: Performance measured — preliminary numbers already in hand
 - CPI with forwarding on vs off, same programs: 1.39 vs 1.84 average, 1.32x speedup (fib 1.65x, bsort 1.38x, bloop 1.22x).
@@ -82,7 +92,7 @@ NEXT (to Sep 17):
 - Adversarial alternating-branch program: 49.9% accuracy, 10% more cycles. That's the predictor's real limit, and we report it.
 
 ### Slide 4: What's next
-- Re-run the full regression after the timing fixes, lock the final numbers, write the performance chapter, build the demo.
+- Re-run the full regression after the timing work, lock the final numbers, capture waveforms, write the performance chapter, build the demo script.
 - On track for Sep 17. Nothing outstanding is new engineering; it is finishing measurement on a machine that already works.
 
 ---
