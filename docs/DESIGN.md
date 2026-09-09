@@ -1193,7 +1193,7 @@ construction.
 #### Directed check
 
 `tb/tb_irq.v` verifies the round trip structurally rather than by diffing,
-with 21 assertions over the whole trap: that the trap only fires with a valid
+with 22 assertions over the whole trap: that the trap only fires with a valid
 instruction in EX; that `mepc` equals the squashed instruction's PC and
 `mcause` is `0x8000000B`; that `MPIE` captures the old `MIE` and `MIE` is
 cleared on entry and restored by `mret`; that at most two instructions retire
@@ -1544,7 +1544,7 @@ all four `FORWARDING` × `BHT_ENABLE` combinations unless noted.*
 | `tb_pc` | 12 vectors | PASS | — |
 | `tb_perf_counters` | 19 vectors | PASS | — |
 | `tb_bht` | 2600 checks | PASS | — |
-| `tb_irq` | 21 assertions | PASS | PASS |
+| `tb_irq` | 22 assertions | PASS | PASS |
 | `asm/insn/*` | 46 programs | 46/46 (BHT on and off) | 46/46 |
 | `asm/hazard/*` | 9 programs | 9/9 (BHT on and off) | 9/9 (BHT on and off) |
 | `asm/prog/*` | 5 programs (irq at cycles 200, 500) | 5/5 (BHT on and off) | 5/5 (BHT on and off) |
