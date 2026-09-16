@@ -104,11 +104,19 @@ if ($Worktree) {
         Write-Error "FAIL: git archive HEAD -- rtl failed"
         exit 1
     }
-    tar -xf $rtlTar -C $Shadow
+    tar -xf $rtlTar -C $Shadow --force-local
     if ($LASTEXITCODE -ne 0) {
-        Pop-Location
-        Write-Error "FAIL: tar extract of rtl snapshot failed"
-        exit 1
+        # MSYS/GNU tar treats "C:\..." as host:path; --force-local fixes that.
+        # If tar still balks (e.g. bsdtar without --force-local), fall back to
+        # copying the archive into the ASCII shadow dir before extracting.
+        Copy-Item -Path $rtlTar -Destination (Join-Path $Shadow "rtl.tar") -Force
+        tar -xf (Join-Path $Shadow "rtl.tar") -C $Shadow
+        if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            Write-Error "FAIL: tar extract of rtl snapshot failed"
+            exit 1
+        }
+        Remove-Item -Force (Join-Path $Shadow "rtl.tar")
     }
     Remove-Item -Force $rtlTar
 
@@ -120,11 +128,16 @@ if ($Worktree) {
         Write-Error "FAIL: git archive HEAD -- $Hex failed"
         exit 1
     }
-    tar -xf $asmTar -C $Shadow
+    tar -xf $asmTar -C $Shadow --force-local
     if ($LASTEXITCODE -ne 0) {
-        Pop-Location
-        Write-Error "FAIL: tar extract of $Hex snapshot failed"
-        exit 1
+        Copy-Item -Path $asmTar -Destination (Join-Path $Shadow "asm.tar") -Force
+        tar -xf (Join-Path $Shadow "asm.tar") -C $Shadow
+        if ($LASTEXITCODE -ne 0) {
+            Pop-Location
+            Write-Error "FAIL: tar extract of $Hex snapshot failed"
+            exit 1
+        }
+        Remove-Item -Force (Join-Path $Shadow "asm.tar")
     }
     Remove-Item -Force $asmTar
 }
