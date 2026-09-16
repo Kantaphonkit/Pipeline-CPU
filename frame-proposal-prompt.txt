@@ -1,0 +1,34 @@
+Read these three files in order before doing anything:
+1. PROJECT-REQUIREMENTS.md — the authoritative spec (task statement, final decisions, timeline).
+2. Report/midterm-report.docx — the current midterm report, written as a PROGRESS report.
+3. Report/proposal-conversion.md — the recipe already used to convert the presentation deck from a progress report into a proposal. Follow this exact philosophy.
+
+(If the .docx cannot be read directly, extract its text with Python: unzip word/document.xml and pull the <w:t> element text, or use python-docx.)
+
+CONTEXT
+The instructor has asked for a PROPOSAL, not a progress report. The owner (Kantaphon) wants a hybrid: proposal framing that keeps the progress/feasibility evidence. The guiding frame is "a proposal backed by a working prototype" — every result is presented as evidence that the proposal is achievable, not as the endpoint of a progress report.
+
+TASK
+Convert the midterm report into a proposal-framed document.
+
+RULES
+1. Change the frame, not the content. Keep every number, result, and technical statement. Only the narrative spine and the tense change.
+2. Tense rule: replace completed/measured framing ("we built", "is green", "has been run") with proposal framing ("we propose to deliver", "the prototype demonstrates", "feasibility evidence"). Results become evidence, not conclusions.
+3. Do NOT change: any measured number (CPI, MHz, LUT/FF/BRAM, test counts), any technical claim, or the team placeholder names ("Member A/B/C" stay as-is; real names are added later by the owner).
+4. Do NOT invent figures, screenshots, or data. Where a figure is needed, insert a placeholder like [FIGURE: <description>].
+
+STRUCTURE — map current sections to proposal sections
+- §1 Objective + task          -> sharpen into "Objective and success criteria" (add explicit success criteria; mirror the four criteria from proposal-conversion.md slide 2)
+- §2 Microarchitecture + ISA   -> "Proposed design"
+- §3 Hazard handling           -> "Proposed design (hazard scheme)"
+- §4 Verification status       -> "Feasibility evidence: verification method and results"
+- §5 Performance results       -> "Feasibility evidence: measured on the prototype"
+- §6 Bonus features            -> "Proposed bonus scope"
+- §7 Team organisation         -> keep unchanged
+- §8 Work plan                 -> keep, but promote the risk rule into a standing risk register
+- §9 Status summary            -> fold into "Commitments and remaining work"
+- ADD "Design choices and what was ruled out" — a decision table (choice / alternative / reason), mirroring proposal-conversion.md slide 5. The I-cache cut is the strongest example; argue it on measurement grounds.
+- ADD "Deliverables, owners, milestones, risk" — mirroring proposal-conversion.md slide 8 (each deliverable with one owner and a state, the milestone list, and a risk register).
+
+OUTPUT
+Write the complete proposal-framed report as Markdown to Report/midterm-proposal.md. It must be complete and paste-ready (the owner will drop it into the docx). Do not shorten the technical content — this is a full report, not a summary. Leave "Member A/B/C" and any figure placeholders as-is.
