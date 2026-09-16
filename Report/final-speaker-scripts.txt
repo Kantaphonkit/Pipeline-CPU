@@ -1,0 +1,86 @@
+# Final Demo — Speaker Scripts (8 slides)
+
+Team: 杨辉宗 1820232064 (Design) · 吴宏庆 1820232044 (Coding) · 王伟成 1820232061 (Testing)
+Deck: `Report/rv32i-final-deck.html` — arrow keys / space advance; click again to reveal a slide's build steps.
+
+## Timing overview
+
+| Speaker | Slides | Time |
+|---|---|---|
+| 1 — 杨辉宗 (Design) | 1 · 2 · 3 | ~110 s |
+| 2 — 吴宏庆 (Coding) | 4 · 7 | ~100 s |
+| 3 — 王伟成 (Testing) | 5 · 6 · 8 | ~130 s |
+
+Total ~5.5 min. Say it in your own words — do not read these verbatim.
+
+---
+
+## Speaker 1 — 杨辉宗 (Design) — slides 1–3
+
+### Slide 1 · Title  (~20 s)
+> "Good afternoon. We built a five-stage RISC-V RV32I processor in Verilog — 46 instructions, full forwarding, branch prediction, and interrupts. It is verified byte-for-byte against a reference model we wrote ourselves, and it synthesizes at 74 megahertz. I'll cover the design, then 吴宏庆 will show it running, and 王伟成 will close with the numbers."
+- No build steps on this slide.
+
+### Slide 2 · The machine  (~50 s)
+> "A textbook five-stage pipeline — fetch, decode, execute, memory, write-back. 46 encodings: 37 core RISC-V plus 9 system — almost three times the 16-instruction minimum. Two bonuses: a branch predictor and interrupts. And one thing worth saying early: the course names Mars as the simulator, but Mars only runs MIPS — so we wrote our own assembler and our own golden reference model. That decision shaped everything downstream."
+- Cue: advance (step 2) to reveal the instruction-set panel.
+
+### Slide 3 · Hazards  (~40 s)
+> "The whole correctness story is three mechanisms. Forwarding routes results straight back to the ALU, so data hazards don't stall. The one case forwarding can't fix — a load feeding the very next instruction — gets a single-cycle stall. And a taken branch or trap flushes the younger instructions already in flight. That's it: forward, one stall, one flush."
+- Cue: the three panels are build steps; reveal each as you name it.
+- Handoff: "Now 吴宏庆 shows it actually running."
+
+---
+
+## Speaker 2 — 吴宏庆 (Coding) — slides 4, 7
+
+### Slide 4 · Live demo  (~60 s) — the centerpiece
+> "This is the machine in simulation, in Vivado's xsim. Three things to point at. First, the stall — when a load feeds its own consumer, the stall signal is high for exactly one cycle and the PC freezes. Second, forwarding — the next cycle the operand comes from the memory/write-back path instead. Third, the flush — on a taken branch both flush signals assert, and a killed instruction never writes anything and never shows up in the commit trace. Every test prints its own pass or fail and exits nonzero on failure — the function is demonstrated, not asserted."
+- Take your time here; this is the proof.
+
+### Slide 7 · Bonus features  (~40 s)
+> "Two bonuses are implemented, one is deliberately cut. Interrupts: a simplified machine-mode set — mstatus, mie, mtvec, mepc, mcause — with mret. A testbench-driven interrupt runs a timer-like handler that saves registers, toggles a counter, and returns. 21 assertions pass and the trace matches the reference model line for line. The subtle part is the trap asymmetry: an ecall must advance mepc by four before returning, but an interrupt must not — get it wrong and the handler loops forever.
+>
+> The cache we designed but did not build: the whole test suite fits in 2 kilobytes, so the hit rate would read 99 percent on every program — a number that proves nothing. So we cut it and wrote the design up instead."
+- Cue: reveal the two right panels (step 2) for the asymmetry + cache.
+- Handoff: "Verification and the numbers are 王伟成's."
+
+---
+
+## Speaker 3 — 王伟成 (Testing) — slides 5, 6, 8
+
+### Slide 5 · Verification  (~45 s)
+> "Green against an independent model, not against our own expectations. 46 of 46 per-instruction tests, 9 of 9 hazard tests, 5 of 5 program-level — all at all four combinations of forwarding on/off and branch-prediction on/off. The method that matters is a commit-trace diff: we run the same program on the RTL and on our Python reference model and diff the traces byte for byte. A final-state check tells you the answer is wrong; a trace diff tells you which instruction went wrong."
+- Cue: reveal the right-hand panels (step 2) for trace-diff + mutation.
+
+### Slide 6 · Performance  (~50 s)
+> "Performance: every figure carries its own baseline — we switch a feature off and re-run the same programs. Forwarding on versus off: CPI drops from 1.84 to 1.39 on average, a 1.32-times speedup. That is the 'show performance' requirement, measured, not estimated. The branch predictor hits 95.5 percent accuracy on the branch-heavy demo and saves 14.5 percent of cycles. And we report the adversarial case where it loses — 49.9 percent on alternating branches — because that is the predictor's real limit."
+- Cue: reveal the "honest part" panel (step 2).
+
+### Slide 8 · Synthesis + close  (~40 s)
+> "Synthesis on an Artix-7: 74 megahertz with setup timing met, 1,461 LUTs, 819 flip-flops, two block RAMs. We identified the critical path — the load-to-branch chain through the data memory's clock-to-output and the forwarding mux — which is why 74 is a measured floor, not a guess.
+>
+> To close: the task asked for 16 instructions. We shipped 46, verified byte for byte, both bonuses green, synthesized at 74 megahertz. Thank you — happy to take questions."
+- Cue: reveal the critical-path panel (step 2).
+
+---
+
+## Key numbers to have cold (no looking at slides)
+- 46 encodings (37 core + 9 system) — 2.9× the 16-instruction minimum
+- 5 stages · 19 Verilog modules · Verilog-2001
+- CPI 1.387 (fwd on) vs 1.837 (off) → 1.32×  (fib 1.65× · bsort 1.38× · bloop 1.22×)
+- BHT 95.5% accuracy, −14.5% cycles; fib 93.4%; adversarial 49.9%
+- Interrupts: 21 assertions, 633/633 trace lines match the ISS
+- Synthesis: 74 MHz · 1,461 LUT · 819 FF · 2 BRAM
+- 4,323 assembler-vs-ISS cross-validation checks
+
+## If only 2 people present
+- Speaker A (Design + Coding): slides 1–4 and 7  (~3.5 min)
+- Speaker B (Testing): slides 5, 6, 8  (~2.5 min)
+
+## Likely questions + answers
+- "Why 74 MHz and not 100?" — the 100 MHz target didn't close; we found the limiting path (DMEM clock-to-output through the forwarding mux) and reported the met 74 MHz honestly rather than an extrapolated number.
+- "Why no cache?" — the whole suite fits in 2 KB, so the hit rate would be a trivial ~99%; a number that reads 99% proves nothing, so we designed and documented it instead.
+- "Why your own reference model, not Mars?" — Mars is MIPS-only and cannot execute RISC-V; our Python ISS is the oracle the RTL trace is diffed against.
+- "How do you know the tests aren't trivially passing?" — mutation testing: we injected deliberate bugs and confirmed each testbench fails on the broken copy.
+- "What's the trap asymmetry?" — ecall leaves mepc at the ecall (handler adds 4); an interrupt leaves mepc at an instruction that never ran (handler must NOT add 4).

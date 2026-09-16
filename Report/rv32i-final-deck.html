@@ -1,0 +1,504 @@
+<title>RV32I Pipeline Final</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --ground:#E7DECB; --surface:#F7F3E8; --surface-2:#FCFAF3; --surface-3:#DDD3BE;
+  --ink:#2A2419; --ink-2:#655C4C; --ink-3:#8F8674; --rule:#D2C7AF; --rule-2:#B7AA8E;
+  --series-a:#2F6FA8; --series-b:#9A6410;
+  --fwd:#9A6410; --stall:#6B54A8; --flush:#A83226; --ok:#3E7A4A;
+  --st1:#CBDBEA; --st1-ink:#1B2A38; --st2:#9CBBD8; --st2-ink:#1B2A38; --st3:#6E97C0; --st3-ink:#F7F3E8; --st4:#4574A2; --st4-ink:#F7F3E8; --st5:#2A5479; --st5-ink:#F7F3E8;
+  --tint-a:rgba(47,111,168,.12); --tint-b:rgba(154,100,16,.14); --grid:rgba(42,36,25,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#191510; --surface:#24201A; --surface-2:#2D2820; --surface-3:#131009;
+    --ink:#EDE4D2; --ink-2:#AFA48D; --ink-3:#7D7462; --rule:#3A342B; --rule-2:#4F473A;
+    --series-a:#4F97D6; --series-b:#B8862B;
+    --fwd:#B8862B; --stall:#9385D2; --flush:#D2695C; --ok:#6FA97D;
+    --st1:#25384A; --st1-ink:#EDE4D2; --st2:#33506B; --st2-ink:#EDE4D2; --st3:#446A8B; --st3-ink:#EDE4D2; --st4:#5F8CB2; --st4-ink:#191510; --st5:#88B2D4; --st5-ink:#191510;
+    --tint-a:rgba(79,151,214,.15); --tint-b:rgba(184,134,43,.16); --grid:rgba(237,228,210,.045);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#191510; --surface:#24201A; --surface-2:#2D2820; --surface-3:#131009;
+  --ink:#EDE4D2; --ink-2:#AFA48D; --ink-3:#7D7462; --rule:#3A342B; --rule-2:#4F473A;
+  --series-a:#4F97D6; --series-b:#B8862B;
+  --fwd:#B8862B; --stall:#9385D2; --flush:#D2695C; --ok:#6FA97D;
+  --st1:#25384A; --st1-ink:#EDE4D2; --st2:#33506B; --st2-ink:#EDE4D2; --st3:#446A8B; --st3-ink:#EDE4D2; --st4:#5F8CB2; --st4-ink:#191510; --st5:#88B2D4; --st5-ink:#191510;
+  --tint-a:rgba(79,151,214,.15); --tint-b:rgba(184,134,43,.16); --grid:rgba(237,228,210,.045);
+}
+
+*{box-sizing:border-box}
+body{background:var(--ground); color:var(--ink); font-family:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif; margin:0; overflow:hidden}
+.viewport{position:fixed; inset:0; display:flex; align-items:center; justify-content:center}
+.stage{width:1920px; height:1080px; flex:none; transform-origin:center center; display:flex; flex-direction:column; padding:0 96px; background:linear-gradient(var(--grid) 1px, transparent 1px) 0 0/48px 48px, linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0/48px 48px, var(--ground)}
+
+.rail{height:104px; flex:none; display:flex; align-items:center; gap:22px; border-bottom:1px solid var(--rule)}
+.rail .dot{width:7px;height:7px;border-radius:50%;background:var(--series-a);flex:none}
+.rail .sect{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:19px; font-weight:600; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-2); white-space:nowrap}
+.rail .spacer{flex:1}
+.rail .meta{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:18px; color:var(--ink-3); letter-spacing:.05em; white-space:nowrap; margin-left:16px}
+
+.minimap{display:flex; gap:4px; align-items:center}
+.minimap i{font-family:"IBM Plex Mono",ui-monospace,monospace; font-style:normal; font-size:13px; font-weight:600; letter-spacing:.08em; width:52px; height:26px; border-radius:2px; display:flex; align-items:center; justify-content:center; background:var(--surface-3); color:var(--ink-3); border:1px solid var(--rule)}
+.minimap i.lit{background:var(--series-a); color:var(--surface); border-color:var(--series-a)}
+.segs{display:flex;gap:5px;align-items:center;margin-left:34px}
+.seg{width:46px;height:4px;background:var(--rule-2);border-radius:2px}
+.seg.act{background:var(--series-a)}
+
+.deck{flex:1; position:relative; min-height:0}
+.slide{position:absolute; inset:0; display:none; flex-direction:column}
+.slide.on{display:flex}
+.body{flex:1; padding:40px 0 20px; display:flex; flex-direction:column; min-height:0}
+
+h1{font-family:Archivo,"Helvetica Neue",Arial,sans-serif; font-weight:700; font-size:62px; line-height:1.04; letter-spacing:-.022em; margin:0; text-wrap:balance}
+h2{font-family:Archivo,"Helvetica Neue",Arial,sans-serif; font-weight:700; font-size:46px; line-height:1.06; letter-spacing:-.018em; margin:0 0 10px; text-wrap:balance}
+.dek{font-size:25px; line-height:1.42; color:var(--ink-2); max-width:1180px; margin:0}
+.eyebrow{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:17px; font-weight:600; letter-spacing:.2em; text-transform:uppercase; color:var(--series-a); margin:0 0 14px}
+
+.key{flex:none; min-height:92px; padding:20px 0 26px; border-top:1px solid var(--rule); display:flex; align-items:center; gap:18px}
+.key .bar{width:4px; align-self:stretch; background:var(--series-a); border-radius:2px; flex:none}
+.key p{margin:0; font-size:27px; line-height:1.34; font-weight:500; letter-spacing:-.005em}
+.key em{font-style:normal; color:var(--series-a)}
+
+[data-step]{opacity:0; transition:opacity .3s ease}
+[data-step].shown{opacity:1}
+@media (prefers-reduced-motion: reduce){[data-step]{transition:none}}
+
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.fig{margin:0; flex:1; display:flex; flex-direction:column; justify-content:center; min-height:0}
+.fig svg{width:100%; height:auto; max-height:100%; display:block}
+.fig img{max-width:100%; max-height:100%; display:block; border-radius:3px; border:1px solid var(--rule)}
+figcaption{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:17px; color:var(--ink-3); margin-top:14px; letter-spacing:.02em}
+
+.panel{background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:24px 26px}
+.panel h3{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:16px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3); margin:0 0 16px}
+
+table.spec{border-collapse:collapse; width:100%; font-size:22px}
+table.spec td{padding:13px 0; border-bottom:1px solid var(--rule); vertical-align:top}
+table.spec tr:last-child td{border-bottom:0}
+table.spec td.k{color:var(--ink-2); width:250px; padding-right:26px; font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:18px; letter-spacing:.04em; text-transform:uppercase; padding-top:16px}
+
+table.data{border-collapse:collapse; width:100%; font-size:21px; font-variant-numeric:tabular-nums}
+table.data th{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:15px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); text-align:right; padding:0 14px 11px; border-bottom:1px solid var(--rule-2)}
+table.data th:first-child{text-align:left}
+table.data td{padding:12px 14px; text-align:right; border-bottom:1px solid var(--rule)}
+table.data td:first-child{text-align:left; font-family:"IBM Plex Mono",ui-monospace,monospace}
+table.data tr:last-child td{border-bottom:0}
+table.data tr.hi td{background:var(--tint-a); font-weight:600}
+table.data td.num{font-family:"IBM Plex Mono",ui-monospace,monospace}
+table.data td.w{text-align:left; font-family:"IBM Plex Sans",sans-serif; font-size:19px; color:var(--ink-2); padding-left:30px}
+
+.tiles{display:grid; gap:18px}
+.tile{background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:22px 24px; display:flex; flex-direction:column; gap:6px}
+.tile .n{font-family:Archivo,sans-serif; font-weight:700; font-size:52px; letter-spacing:-.03em; line-height:1; font-variant-numeric:tabular-nums}
+.tile .l{font-size:19px; color:var(--ink-2); line-height:1.34}
+.tile .s{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:15px; color:var(--ink-3); letter-spacing:.04em}
+
+.chips{display:flex; gap:8px; flex-wrap:wrap}
+.chip{font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:17px; padding:6px 11px; border-radius:2px; background:var(--surface-3); border:1px solid var(--rule); color:var(--ink-2)}
+
+.title-wrap{flex:1; display:flex; flex-direction:column; justify-content:center; gap:30px}
+.title-wrap h1{font-size:92px; letter-spacing:-.03em}
+.stagestrip{display:flex; gap:10px}
+.stagestrip div{flex:1; height:72px; border-radius:3px; display:flex; align-items:center; justify-content:center; font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:24px; font-weight:600; letter-spacing:.22em}
+.keyline{display:flex; gap:34px; align-items:center; flex-wrap:wrap; font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:18px; color:var(--ink-2)}
+.keyline span{display:flex; gap:10px; align-items:center}
+.keyline i{width:16px; height:16px; border-radius:2px; display:block}
+
+.ctl{position:fixed; right:22px; bottom:20px; display:flex; gap:8px; align-items:center; font-family:"IBM Plex Mono",ui-monospace,monospace; z-index:10}
+.ctl button{font:inherit; font-size:16px; color:var(--ink-2); background:var(--surface); border:1px solid var(--rule-2); border-radius:3px; padding:8px 13px; cursor:pointer; line-height:1}
+.ctl button:hover{color:var(--ink); border-color:var(--ink-3)}
+.ctl button:focus-visible{outline:2px solid var(--series-a); outline-offset:2px}
+.ctl .pos{font-size:16px; color:var(--ink-3); padding:0 8px; font-variant-numeric:tabular-nums}
+
+@media print{
+  body{overflow:visible}
+  .viewport{position:static; display:block}
+  .stage{transform:none !important; height:auto}
+  .deck{position:static}
+  .slide{display:flex !important; position:relative; page-break-after:always; height:960px}
+  [data-step]{opacity:1 !important}
+  .ctl{display:none}
+}
+</style>
+
+<div class="viewport">
+<div class="stage" id="stage">
+
+  <header class="rail">
+    <span class="dot"></span>
+    <span class="sect" id="sect">Computer Organization</span>
+    <span class="spacer"></span>
+    <span class="minimap" id="minimap"><i data-s="IF">IF</i><i data-s="ID">ID</i><i data-s="EX">EX</i><i data-s="MEM">MEM</i><i data-s="WB">WB</i></span>
+    <span class="segs" id="segs"><i class="seg"></i><i class="seg"></i><i class="seg"></i></span>
+    <span class="meta" id="meta">1 / 8</span>
+  </header>
+
+  <div class="deck" id="deck">
+
+  <!-- ============ 01 TITLE ============ -->
+  <section class="slide on" data-sect="Computer Organization &middot; BIT Y4T1" data-seg="1" data-steps="1">
+    <div class="body">
+      <div class="title-wrap">
+        <div>
+          <p class="eyebrow">Pipeline CPU Project &middot; Final Demo</p>
+          <h1>A 5-stage RISC-V<br>RV32I processor in Verilog</h1>
+        </div>
+        <p class="dek" style="font-size:27px;max-width:1320px">
+          46 encodings, full forwarding, a load-use interlock, branch prediction, and machine-mode
+          interrupts. Verified byte-for-byte against a golden reference model we wrote ourselves,
+          and synthesized for an Artix-7 at 74 MHz.
+        </p>
+        <div class="stagestrip">
+          <div style="background:var(--st1);color:var(--st1-ink)">IF</div>
+          <div style="background:var(--st2);color:var(--st2-ink)">ID</div>
+          <div style="background:var(--st3);color:var(--st3-ink)">EX</div>
+          <div style="background:var(--st4);color:var(--st4-ink)">MEM</div>
+          <div style="background:var(--st5);color:var(--st5-ink)">WB</div>
+        </div>
+        <div class="keyline">
+          <span style="color:var(--ink-3)">Colours used throughout:</span>
+          <span><i style="background:var(--fwd)"></i>bypass network</span>
+          <span><i style="background:var(--stall)"></i>interlock / stall</span>
+          <span><i style="background:var(--flush)"></i>flush / killed</span>
+          <span><i style="background:var(--ok)"></i>free</span>
+        </div>
+        <table class="spec" style="max-width:1120px">
+          <tr><td class="k">Design</td><td>杨辉宗 1820232064 &middot; microarchitecture, hazard scheme, design document</td></tr>
+          <tr><td class="k">Coding</td><td>吴宏庆 1820232044 &middot; 19 RTL modules, assembler, reference model</td></tr>
+          <tr><td class="k">Testing</td><td>王伟成 1820232061 &middot; testbenches, trace diffing, performance measurement</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Every number in this talk is <em>measured, not estimated</em> &mdash; and every figure carries its own baseline.</p></div>
+  </section>
+
+  <!-- ============ 02 THE MACHINE ============ -->
+  <section class="slide" data-sect="01 &middot; The machine" data-seg="1" data-hi="IF,ID,EX,MEM,WB" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">The machine</p>
+      <h2>One 5-stage pipeline, 46 encodings, two bonuses</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1.15fr 1fr; gap:34px; padding-top:14px; align-content:start; min-height:0">
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="stagestrip">
+            <div style="background:var(--st1);color:var(--st1-ink)">IF</div>
+            <div style="background:var(--st2);color:var(--st2-ink)">ID</div>
+            <div style="background:var(--st3);color:var(--st3-ink)">EX</div>
+            <div style="background:var(--st4);color:var(--st4-ink)">MEM</div>
+            <div style="background:var(--st5);color:var(--st5-ink)">WB</div>
+          </div>
+          <div class="panel">
+            <h3>Stage responsibilities</h3>
+            <table class="spec">
+              <tr><td class="k">IF</td><td>Fetch from IMEM; BHT lookup indexed by the fetch PC; PC holds the selected next PC</td></tr>
+              <tr><td class="k">ID</td><td>Decode, immediate generation, register read; <span class="mono">jal</span> resolved here (1 bubble)</td></tr>
+              <tr><td class="k">EX</td><td>ALU, branch compare + target, forwarding muxes; branches + <span class="mono">jalr</span> resolve here (2 bubbles)</td></tr>
+              <tr><td class="k">MEM</td><td>Data memory load/store; the BRAM word is registered on the MEM edge</td></tr>
+              <tr><td class="k">WB</td><td>Byte-lane select + extension, then register write-back</td></tr>
+            </table>
+          </div>
+          <div class="chips" data-step="2">
+            <span class="chip">Verilog-2001</span>
+            <span class="chip">Harvard 4 KB IMEM + 4 KB DMEM</span>
+            <span class="chip">19 modules</span>
+            <span class="chip">own assembler + golden ISS &mdash; Mars is MIPS-only</span>
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="tiles" style="grid-template-columns:1fr 1fr">
+            <div class="tile"><span class="n" style="color:var(--series-a)">46</span><span class="l">encodings</span><span class="s">37 core + 9 system</span></div>
+            <div class="tile"><span class="n" style="color:var(--series-b)">2</span><span class="l">bonus features</span><span class="s">BHT + interrupts</span></div>
+          </div>
+          <div class="panel" style="flex:1" data-step="2">
+            <h3>Instruction set</h3>
+            <table class="spec">
+              <tr><td class="k">R-type</td><td>add sub sll slt sltu xor srl sra or and</td></tr>
+              <tr><td class="k">I-arith</td><td>addi slti sltiu xori ori andi slli srli srai</td></tr>
+              <tr><td class="k">Loads / stores</td><td>lb lh lw lbu lhu &middot; sb sh sw</td></tr>
+              <tr><td class="k">Branches</td><td>beq bne blt bge bltu bgeu</td></tr>
+              <tr><td class="k">U + jumps</td><td>lui auipc jal jalr</td></tr>
+              <tr><td class="k">System</td><td>ecall ebreak csr* mret</td></tr>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>The shallowest design that still exposes <em>all three hazard classes</em> &mdash; which is the point of the exercise.</p></div>
+  </section>
+
+  <!-- ============ 03 HOW IT WORKS ============ -->
+  <section class="slide" data-sect="01 &middot; The machine" data-seg="1" data-hi="EX" data-steps="3">
+    <div class="body">
+      <p class="eyebrow">Hazards</p>
+      <h2>Three mechanisms, one rule each</h2>
+      <p class="dek" style="margin-bottom:26px">The whole correctness story reduces to forwarding, one stall, and one flush.</p>
+      <div style="flex:1; display:grid; grid-template-columns:1fr 1fr 1fr; gap:26px; align-content:start; min-height:0">
+        <div class="panel" style="border-top:4px solid var(--fwd)">
+          <h3 style="color:var(--fwd)">Forward</h3>
+          <p style="font-size:22px;line-height:1.4;color:var(--ink);margin:0 0 14px">EX/MEM and MEM/WB results route straight back to the ALU inputs &mdash; no stall for a data hazard.</p>
+          <p class="mono" style="font-size:17px;color:var(--ink-3);margin:0">EX/MEM wins over MEM/WB &middot; x0 never forwarded &middot; store data forwarded too</p>
+        </div>
+        <div class="panel" style="border-top:4px solid var(--stall)">
+          <h3 style="color:var(--stall)">Stall</h3>
+          <p style="font-size:22px;line-height:1.4;color:var(--ink);margin:0 0 14px">A load feeding the very next instruction is the one case forwarding cannot save.</p>
+          <p class="mono" style="font-size:17px;color:var(--ink-3);margin:0">load-use interlock &middot; freeze PC + IF/ID &middot; one bubble into ID/EX</p>
+        </div>
+        <div class="panel" style="border-top:4px solid var(--flush)">
+          <h3 style="color:var(--flush)">Flush</h3>
+          <p style="font-size:22px;line-height:1.4;color:var(--ink);margin:0 0 14px">A taken branch or trap squashes the younger instructions already in the pipe.</p>
+          <p class="mono" style="font-size:17px;color:var(--ink-3);margin:0">jal = 1 bubble &middot; branch / jalr / trap / mret = 2 bubbles &middot; killed insns never retire</p>
+        </div>
+      </div>
+      <div style="display:flex; gap:34px; margin-top:26px; padding-top:22px; border-top:1px solid var(--rule); align-items:center">
+        <span class="keyline" style="margin:0">
+          <span><i style="background:var(--fwd)"></i>bypass</span>
+          <span><i style="background:var(--stall)"></i>interlock</span>
+          <span><i style="background:var(--flush)"></i>flush</span>
+          <span><i style="background:var(--ok)"></i>free</span>
+        </span>
+        <p style="margin:0; font-size:21px; color:var(--ink-2); flex:1">A redirect always overrides a stall &mdash; the instruction that raised the stall is being killed anyway.</p>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Everything above CPI&nbsp;1.0 is <em>control-flow bubbles and load-use stalls</em>. There is no other source of delay in this design.</p></div>
+  </section>
+
+  <!-- ============ 04 LIVE DEMO ============ -->
+  <section class="slide" data-sect="02 &middot; Evidence" data-seg="2" data-hi="EX,MEM" data-steps="1">
+    <div class="body">
+      <p class="eyebrow">Demo</p>
+      <h2>The machine in simulation</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1.45fr 1fr; gap:30px; padding-top:10px; min-height:0">
+        <figure class="fig">
+          <img src="Test screenshot/Waveform.png" alt="xsim waveform showing a load-use stall, forwarding, and a branch flush">
+          <figcaption><span class="mono">pc_q</span> &middot; <span class="mono">stall</span> &middot; <span class="mono">flush_id</span> &middot; <span class="mono">fwd_a</span> &mdash; the three hazards, live</figcaption>
+        </figure>
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="panel">
+            <h3>What to point at</h3>
+            <table class="spec">
+              <tr><td class="k" style="color:var(--stall)">Stall</td><td><span class="mono">stall</span> high for exactly one cycle; PC and IF/ID hold their value</td></tr>
+              <tr><td class="k" style="color:var(--fwd)">Forward</td><td><span class="mono">fwd_a</span> switches to the MEM/WB path the cycle after the stall</td></tr>
+              <tr><td class="k" style="color:var(--flush)">Flush</td><td>both <span class="mono">flush</span> signals assert; the trace valid never fires for a killed insn</td></tr>
+            </table>
+          </div>
+          <div class="panel" style="border-color:var(--series-a)">
+            <h3 style="color:var(--series-a)">Live run</h3>
+            <p style="margin:0; font-size:20px; line-height:1.45; color:var(--ink-2)">Regression prints one PASS/FAIL line per program, then a TOTAL row with cycles, retired instructions, stalls, flushes and CPI &mdash; nonzero exit on any failure.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Function is shown in simulation, not asserted &mdash; <em>every test states its own PASS or FAIL verdict</em>.</p></div>
+  </section>
+
+  <!-- ============ 05 VERIFICATION ============ -->
+  <section class="slide" data-sect="02 &middot; Evidence" data-seg="2" data-hi="WB" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">Verification</p>
+      <h2>Green against an independent model, not our own expectations</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1.3fr 1fr; gap:34px; padding-top:12px; align-content:start; min-height:0">
+        <div class="panel">
+          <h3>Results &mdash; all four forwarding &times; BHT configurations</h3>
+          <table class="data">
+            <thead><tr><th>Suite</th><th>Scope</th><th>Result</th></tr></thead>
+            <tbody>
+              <tr class="hi"><td>Per-instruction</td><td class="w">one program per encoding, golden state</td><td class="num">46 / 46</td></tr>
+              <tr><td>Hazard</td><td class="w">forwarding, load-use, flush, CSR</td><td class="num">9 / 9</td></tr>
+              <tr><td>Program-level</td><td class="w">fib, bsort, bloop, bpred, irq &mdash; trace diff vs ISS</td><td class="num">5 / 5</td></tr>
+              <tr><td>Unit testbenches</td><td class="w">imm_gen, ALU, regfile, control, BHT&hellip;</td><td class="num">11 / 11</td></tr>
+              <tr><td>Toolchain self-check</td><td class="w">assembler vs reference model</td><td class="num">4,323</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="panel" data-step="2">
+            <h3>Why a trace diff</h3>
+            <p style="margin:0; font-size:21px; line-height:1.5; color:var(--ink-2)">A final-state check tells you the answer is wrong. A <strong>commit-trace diff</strong> tells you <em>which instruction</em> went wrong &mdash; the difference between an afternoon of debugging and a week.</p>
+          </div>
+          <div class="panel" style="border-color:var(--series-b)" data-step="2">
+            <h3 style="color:var(--series-b)">Tests are trusted, not just passing</h3>
+            <p style="margin:0; font-size:20px; line-height:1.45; color:var(--ink-2)">Every expected value is generated by the reference model, so a test cannot agree with the RTL merely because the same person wrote both. And we injected deliberate bugs to confirm each testbench fails when it should.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Correctness rests on <em>EX-stage resolution + flush</em> &mdash; the predictor only changes when instructions are fetched, never what they compute.</p></div>
+  </section>
+
+  <!-- ============ 06 PERFORMANCE ============ -->
+  <section class="slide" data-sect="02 &middot; Evidence" data-seg="2" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">Performance</p>
+      <h2>Every figure carries its own baseline</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1.25fr 1fr; gap:34px; padding-top:12px; align-content:start; min-height:0">
+        <div class="panel">
+          <h3>Forwarding on vs off &mdash; same programs</h3>
+          <table class="data">
+            <thead><tr><th>Program</th><th>CPI fwd on</th><th>CPI fwd off</th><th>Speedup</th></tr></thead>
+            <tbody>
+              <tr><td>fib</td><td class="num">1.368</td><td class="num">2.263</td><td class="num">1.65&times;</td></tr>
+              <tr><td>bsort</td><td class="num">1.376</td><td class="num">1.904</td><td class="num">1.38&times;</td></tr>
+              <tr><td>bloop</td><td class="num">1.396</td><td class="num">1.707</td><td class="num">1.22&times;</td></tr>
+              <tr class="hi"><td>average</td><td class="num">1.387</td><td class="num">1.837</td><td class="num">1.32&times;</td></tr>
+            </tbody>
+          </table>
+          <p style="margin:16px 0 0; font-size:19px; color:var(--ink-3)">A feature is switched off and the same programs re-run &mdash; that is the "show performance" requirement, not a number with no baseline.</p>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="tiles" style="grid-template-columns:1fr 1fr">
+            <div class="tile"><span class="n" style="color:var(--series-a)">95.5%</span><span class="l">BHT accuracy</span><span class="s">branch-heavy demo</span></div>
+            <div class="tile"><span class="n" style="color:var(--ok)">&minus;14.5%</span><span class="l">cycles saved</span><span class="s">same program</span></div>
+          </div>
+          <div class="panel" data-step="2">
+            <h3>The honest part</h3>
+            <p style="margin:0; font-size:21px; line-height:1.5; color:var(--ink-2)">A 2-bit table helps loop-dominated code (fib 93.4%), is neutral on exit-dominated code, and <strong>hurts</strong> on alternating branches (49.9%, +10% cycles). We report the adversarial case &mdash; it is the predictor's real limit.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>The BHT is a <em>cheap heuristic, not a guarantee</em> &mdash; and saying so is more useful than hiding the case where it loses.</p></div>
+  </section>
+
+  <!-- ============ 07 BONUS FEATURES ============ -->
+  <section class="slide" data-sect="02 &middot; Evidence" data-seg="2" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">Bonus features</p>
+      <h2>Two shipped, one deliberately cut</h2>
+      <div style="flex:1; display:grid; grid-template-columns:1.25fr 1fr; gap:30px; padding-top:12px; align-content:start; min-height:0">
+        <div class="panel" style="border-color:var(--series-a)">
+          <h3 style="color:var(--series-a)">Interrupts &mdash; CSRs + mret</h3>
+          <table class="spec">
+            <tr><td class="k">CSRs</td><td><span class="mono">mstatus</span> (MIE/MPIE) &middot; <span class="mono">mie</span> &middot; <span class="mono">mtvec</span> &middot; <span class="mono">mepc</span> &middot; <span class="mono">mcause</span></td></tr>
+            <tr><td class="k">Insns</td><td><span class="mono">csrrw</span> <span class="mono">csrrs</span> <span class="mono">csrrc</span> + immediate forms &middot; <span class="mono">mret</span></td></tr>
+            <tr><td class="k">Demo</td><td>testbench-driven irq &rarr; a timer-like ISR saves registers, toggles a counter, returns via <span class="mono">mret</span></td></tr>
+            <tr><td class="k">Result</td><td><strong>21 assertions PASS</strong> &middot; 633/633 trace lines match the ISS &middot; irq held while MIE=0, not dropped</td></tr>
+          </table>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:20px; min-height:0">
+          <div class="panel" data-step="2" style="border-color:var(--stall)">
+            <h3 style="color:var(--stall)">The trap asymmetry</h3>
+            <p style="margin:0; font-size:21px; line-height:1.5; color:var(--ink-2)"><span class="mono">ecall</span> leaves <span class="mono">mepc</span> at the <span class="mono">ecall</span> itself, so the handler <strong>adds 4</strong> before <span class="mono">mret</span>. An interrupt leaves <span class="mono">mepc</span> at an instruction that never ran, so the handler must <strong>not</strong> &mdash; <span class="mono">mret</span> re-runs it. Get this wrong and the handler loops forever.</p>
+          </div>
+          <div class="panel" style="border-color:var(--series-b)" data-step="2">
+            <h3 style="color:var(--series-b)">I-cache &mdash; designed, not built</h3>
+            <p style="margin:0; font-size:20px; line-height:1.45; color:var(--ink-2)">Direct-mapped 128 lines &times; 16 B (2 KB) &mdash; but the whole test suite fits in 2 KB, so the hit rate would read ~99 % on every program. <strong>A figure that reads 99 % proves nothing</strong>, so we cut it and wrote the design up instead.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>Both bonuses are <em>switchable off</em> &mdash; a feature that cannot be disabled cannot be measured.</p></div>
+  </section>
+
+  <!-- ============ 08 SYNTHESIS + CLOSE ============ -->
+  <section class="slide" data-sect="03 &middot; Close" data-seg="3" data-steps="2">
+    <div class="body">
+      <p class="eyebrow">Synthesis</p>
+      <h2>74 MHz on an Artix-7, with the path that limits it</h2>
+      <div style="flex:1; display:flex; flex-direction:column; gap:26px; padding-top:14px; min-height:0">
+        <div class="tiles" style="grid-template-columns:1fr 1fr 1fr 1fr">
+          <div class="tile"><span class="n" style="color:var(--series-a)">74 MHz</span><span class="l">setup met</span><span class="s">13.5 ns &middot; WNS +0.052</span></div>
+          <div class="tile"><span class="n" style="color:var(--ink)">1,461</span><span class="l">LUTs</span><span class="s">post-route</span></div>
+          <div class="tile"><span class="n" style="color:var(--ink)">819</span><span class="l">flip-flops</span><span class="s">post-route</span></div>
+          <div class="tile"><span class="n" style="color:var(--series-b)">2</span><span class="l">BRAMs</span><span class="s">IMEM + DMEM</span></div>
+        </div>
+        <div class="panel" data-step="2">
+          <h3>Critical path &mdash; the load-to-branch chain</h3>
+          <p style="margin:0; font-size:22px; line-height:1.5; color:var(--ink-2)">
+            DMEM block-RAM clock-to-output (<span class="mono">2.454 ns</span>, the largest single term)
+            &rarr; byte-lane select + sign extension in WB &rarr; the MEM/WB&rarr;EX forwarding mux
+            &rarr; branch comparator &rarr; redirect into the PC clock-enable.
+          </p>
+          <p style="margin:16px 0 0; font-size:19px; color:var(--ink-3)">Register-to-register hold met at every constraint point; the only hold flags are out-of-context artefacts on the <span class="mono">rst</span> port.</p>
+        </div>
+      </div>
+    </div>
+    <div class="key"><span class="bar"></span><p>A 16-instruction minimum; we shipped <em>46, verified byte-for-byte, synthesized at 74 MHz</em> &mdash; with both bonuses green. Thank you.</p></div>
+  </section>
+
+  </div>
+</div>
+</div>
+
+<div class="ctl">
+  <button id="prev" aria-label="Previous">&larr;</button>
+  <span class="pos" id="pos">1 / 8</span>
+  <button id="next" aria-label="Next">&rarr;</button>
+</div>
+
+<script>
+(function(){
+  var stage   = document.getElementById('stage');
+  var slides  = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var sectEl  = document.getElementById('sect');
+  var metaEl  = document.getElementById('meta');
+  var posEl   = document.getElementById('pos');
+  var mmEls   = Array.prototype.slice.call(document.querySelectorAll('#minimap i'));
+  var segEls  = Array.prototype.slice.call(document.querySelectorAll('#segs .seg'));
+  var MAIN    = 8;
+  var i = 0, st = 1;
+
+  function fit(){
+    var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+    stage.style.transform = 'scale(' + s + ')';
+  }
+
+  function stepsOf(el){ return parseInt(el.getAttribute('data-steps') || '1', 10); }
+
+  function render(){
+    slides.forEach(function(el, k){ el.classList.toggle('on', k === i); });
+    var cur = slides[i];
+
+    Array.prototype.forEach.call(cur.querySelectorAll('[data-step]'), function(e){
+      e.classList.toggle('shown', parseInt(e.getAttribute('data-step'), 10) <= st);
+    });
+
+    sectEl.innerHTML = cur.getAttribute('data-sect') || '';
+
+    var hi = (cur.getAttribute('data-hi') || '').split(',').map(function(s){ return s.trim(); });
+    mmEls.forEach(function(el){ el.classList.toggle('lit', hi.indexOf(el.getAttribute('data-s')) !== -1); });
+
+    var seg = parseInt(cur.getAttribute('data-seg') || '0', 10);
+    segEls.forEach(function(el, k){ el.classList.toggle('act', k === seg - 1); });
+
+    var n = stepsOf(cur);
+    var label = (i < MAIN) ? ((i + 1) + ' / ' + MAIN) : ('A' + (i - MAIN + 1));
+    metaEl.textContent = label + (n > 1 ? '   ·   ' + st + ' of ' + n : '');
+    posEl.textContent = label;
+    try { location.hash = String(i + 1); } catch(e){}
+  }
+
+  function next(){
+    if (st < stepsOf(slides[i])) { st++; }
+    else if (i < slides.length - 1) { i++; st = 1; }
+    render();
+  }
+  function prev(){
+    if (st > 1) { st--; }
+    else if (i > 0) { i--; st = stepsOf(slides[i]); }
+    render();
+  }
+
+  document.getElementById('next').addEventListener('click', next);
+  document.getElementById('prev').addEventListener('click', prev);
+
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); next(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); prev(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); if (i < slides.length-1){ i++; st = 1; render(); } }
+    else if (e.key === 'ArrowUp')   { e.preventDefault(); if (i > 0){ i--; st = 1; render(); } }
+    else if (e.key === 'Home') { e.preventDefault(); i = 0; st = 1; render(); }
+    else if (e.key === 'End')  { e.preventDefault(); i = slides.length - 1; st = stepsOf(slides[i]); render(); }
+  });
+
+  window.addEventListener('resize', fit);
+  fit();
+
+  var start = parseInt((location.hash || '').replace('#',''), 10);
+  if (!isNaN(start) && start >= 1 && start <= slides.length) { i = start - 1; }
+  render();
+})();
+</script>
